@@ -1,66 +1,117 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
-import { usePersistentState } from './usePersistentState.js'
 
-const MIN_IDRETT_POLL_MS = 60_000
-const LATE_CUTOFF_MINS   = 20
-
-const ELIGIBILITY_RULES = {
-  green:  { min: 80, label: 'Kampklar',      color: '#4caf72', bg: '#0d2e1a' },
-  yellow: { min: 60, label: 'Må vurderes',   color: '#f5c842', bg: '#2e2600' },
-  red:    { min:  0, label: 'Ikke kampklar', color: '#e63946', bg: '#2e0a0e' },
+function lsGet(key, fallback) {
+  try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback } catch { return fallback }
+}
+function lsSet(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)) } catch {}
 }
 
-const DISCIPLINES = ['Alle', 'Boksing', 'MMA', 'Kickboksing', 'Muay Thai', 'Grappling']
+const LATE_CUTOFF_MINS  = 20
+const LS_MEMBERS        = 'spartacus_members'
+const LS_ATTENDANCE     = 'spartacus_attendance'
+const LS_OVERRIDES      = 'spartacus_schedule_overrides'
+const LS_DELETED        = 'spartacus_deleted_members'
+const LS_FAKTURAER      = 'spartacus_fakturaer'
+const LS_SPESIALAVTALER = 'spartacus_spesialavtaler'
+
+const FRITIDSKORT_VALUE  = 1995
+const FRITIDSKORT_MONTHS = 5
+const JUNIOR_AGE_LIMIT   = 18
+const JUNIOR_AVGIFT      = 349
+const SENIOR_AVGIFT      = 499
+
+const DISCIPLINES = ['Alle','Boksing','MMA','Kickboksing','Muay Thai','Grappling']
+
+const BETALING_STATUSER = [
+  { key:'ikke_forfalt', label:'Ikke forfalt', color:'#4caf72', icon:'✅' },
+  { key:'forfalt',      label:'Forfalt',       color:'#f5c842', icon:'⚠️' },
+  { key:'purret',       label:'Purret',        color:'#fb923c', icon:'📬' },
+  { key:'inkasso',      label:'Inkasso',       color:'#e63946', icon:'⛔' },
+]
+
+const SESSION_STATUSES = [
+  { key:'normal',       label:'Normal',       color:'#4caf72', icon:'✅' },
+  { key:'cancelled',    label:'Avlyst',       color:'#e63946', icon:'⛔' },
+  { key:'holiday',      label:'Ferie',         color:'#f5c842', icon:'🏖️' },
+  { key:'no_training',  label:'Ingen trening', color:'#777',    icon:'🚫' },
+  { key:'open_mat',     label:'Åpen matte',    color:'#60a5fa', icon:'🤼' },
+]
 
 const SCHEDULE = {
-  Mandag:   [{ name:'Boksing',   disc:'Boksing',    start:'18:00', end:'19:00', icon:'🥊' },
-             { name:'Grappling', disc:'Grappling',  start:'19:00', end:'20:00', icon:'🤼' }],
-  Tirsdag:  [{ name:'Grappling',   disc:'Grappling',   start:'18:00', end:'19:00', icon:'🤼' },
-             { name:'Kickboksing', disc:'Kickboksing', start:'19:00', end:'20:00', icon:'🦵' }],
-  Onsdag:   [{ name:'Mini Spartacus', disc:'MMA', start:'17:00', end:'18:00', icon:'🧸', desc:'Lek • Bevegelse • Kameratskap' },
-             { name:'Basic MMA',      disc:'MMA', start:'18:00', end:'19:00', icon:'🥋', desc:'Teknikk • Fundament • Utvikling' },
-             { name:'Advance MMA',    disc:'MMA', start:'19:00', end:'20:00', icon:'⚔️', desc:'Teknikk • Strategi • Sparring' }],
-  Torsdag:  [{ name:'Muay Thai',        disc:'Muay Thai', start:'18:00', end:'19:00', icon:'🦵' },
-             { name:'Boksing',          disc:'Boksing',   start:'19:00', end:'20:00', icon:'🥊' },
-             { name:'Sparring Boksing', disc:'Boksing',   start:'20:00', end:'21:00', icon:'🥊' }],
-  Fredag:   [{ name:'Mini Spartacus', disc:'MMA', start:'17:00', end:'18:00', icon:'🧸', desc:'Lek • Bevegelse • Kameratskap' },
-             { name:'Elite MMA',      disc:'MMA', start:'18:00', end:'19:00', icon:'🏆', desc:'Kun proffer og aktive som går kamp' }],
-  Lørdag:   [{ name:'Sparring',           disc:'Boksing', start:'12:00', end:'14:00', icon:'🥊', desc:'Praktisk • Utvikling • Kamperfaring' },
-             { name:'Kampsport & Sosialt', disc:'MMA',    start:'21:00', end:'22:30', icon:'🍕', desc:'Alle over 12 år • Gratis • Ingen påmelding' }],
-  Søndag:   [{ name:'Kickboksing', disc:'Kickboksing', start:'17:00', end:'18:00', icon:'🦵' }],
+  Mandag:  [{ name:'Boksing',         disc:'Boksing',     start:'18:00', end:'19:00', icon:'🥊' },
+            { name:'Grappling',       disc:'Grappling',   start:'19:00', end:'20:00', icon:'🤼' }],
+  Tirsdag: [{ name:'Grappling',       disc:'Grappling',   start:'18:00', end:'19:00', icon:'🤼' },
+            { name:'Kickboksing',     disc:'Kickboksing', start:'19:00', end:'20:00', icon:'🦵' }],
+  Onsdag:  [{ name:'Mini Spartacus',  disc:'MMA', start:'17:00', end:'18:00', icon:'🧸' },
+            { name:'Basic MMA',       disc:'MMA', start:'18:00', end:'19:00', icon:'🥋' },
+            { name:'Advance MMA',     disc:'MMA', start:'19:00', end:'20:00', icon:'⚔️' }],
+  Torsdag: [{ name:'Muay Thai',       disc:'Muay Thai',   start:'18:00', end:'19:00', icon:'🦵' },
+            { name:'Boksing',         disc:'Boksing',     start:'19:00', end:'20:00', icon:'🥊' },
+            { name:'Sparring',        disc:'Boksing',     start:'20:00', end:'21:00', icon:'🥊' }],
+  Fredag:  [{ name:'Mini Spartacus',  disc:'MMA', start:'17:00', end:'18:00', icon:'🧸' },
+            { name:'Elite MMA',       disc:'MMA', start:'18:00', end:'19:00', icon:'🏆' }],
+  Lørdag:  [{ name:'Sparring',        disc:'Boksing', start:'12:00', end:'14:00', icon:'🥊' },
+            { name:'Kampsport & Sosialt', disc:'MMA', start:'21:00', end:'22:30', icon:'🍕' }],
+  Søndag:  [{ name:'Kickboksing',     disc:'Kickboksing', start:'17:00', end:'18:00', icon:'🦵' }],
 }
 
-const DAYS_NO      = ['Mandag','Tirsdag','Onsdag','Torsdag','Fredag','Lørdag','Søndag']
-const WEEKDAYS_SMS = ['Søndag','Mandag','Tirsdag','Onsdag','Torsdag','Fredag']
+const DAYS_NO = ['Mandag','Tirsdag','Onsdag','Torsdag','Fredag','Lørdag','Søndag']
+const FAKTURA_KATEGORIER = ['Treningsavgift','Utstyr','Supporter-utstyr','Treningsklær','Leie','Kurs','Dugnad','Annet']
 
-const FAKTURA_KATEGORIER = ['Utstyr','Supporter-utstyr','Treningsklær','Leie','Kurs','Treningsavgift','Dugnad','Annet']
-const INTEGRASJONER = [
-  { key:'fiken',       label:'Fiken',         color:'#1a6c3d', logo:'🟢', desc:'Norges mest brukte regnskapsapp for lag.' },
-  { key:'tripletex',   label:'Tripletex',     color:'#0066cc', logo:'🔵', desc:'Populær norsk løsning for idrettslag.' },
-  { key:'poweroffice', label:'PowerOffice',   color:'#f04e23', logo:'🟠', desc:'Komplett økonomiløsning med fakturering.' },
-  { key:'24seven',     label:'24SevenOffice', color:'#333',    logo:'⚫', desc:'Alt-i-ett for norske organisasjoner.' },
-  { key:'pdf',         label:'Last ned PDF',  color:'#6b21a8', logo:'📄', desc:'Generer PDF – send manuelt eller skriv ut.' },
-]
+const toMins     = h => { const [a,b] = h.split(':').map(Number); return a*60+b }
+const nowHHMM    = () => { const d = new Date(); return String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0') }
+const todayISO   = () => new Date().toISOString().split('T')[0]
+const todayName  = () => DAYS_NO[new Date().getDay() === 0 ? 6 : new Date().getDay()-1]
+const daysAgo    = n => { const d = new Date(); d.setDate(d.getDate()-n); return d.toISOString().split('T')[0] }
+const daysFromNow= n => { const d = new Date(); d.setDate(d.getDate()+n); return d.toISOString().split('T')[0] }
+const genNr      = () => 'SPAR-' + new Date().getFullYear() + '-' + Math.floor(1000+Math.random()*9000)
+const ovKey      = (date, name) => date + '|' + name
 
-const PAYMENT_PRODUCTS = [
-  { id:'treningsavgift', label:'Treningsavgift (månedlig)', amount:499, icon:'🥋' },
-  { id:'kontingent',     label:'Årskontingent NIF',         amount:350, icon:'📋' },
-  { id:'utstyr',         label:'Hanske / utstyr',           amount:299, icon:'🥊' },
-  { id:'kurs',           label:'Kursavgift',                amount:799, icon:'📚' },
-  { id:'enkelttime',     label:'Enkelttime (drop-in)',      amount:150, icon:'🎟️' },
-]
+function getAge(birthDate) {
+  if (!birthDate) return null
+  const today = new Date()
+  const birth = new Date(birthDate)
+  let age = today.getFullYear() - birth.getFullYear()
+  if (today.getMonth() < birth.getMonth() || (today.getMonth() === birth.getMonth() && today.getDate() < birth.getDate())) {
+    age--
+  }
+  return age
+}
 
-const LS_MEMBERS    = 'spartacus_members'
-const LS_ATTENDANCE = 'spartacus_attendance'
+function isJunior(member) {
+  const age = getAge(member.birthDate)
+  if (age === null) return false
+  return age < JUNIOR_AGE_LIMIT
+}
 
-const toMins    = h => { const [a,b]=h.split(':').map(Number); return a*60+b }
-const nowHHMM   = () => { const d=new Date(); return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}` }
-const todayISO  = () => new Date().toISOString().split('T')[0]
-const todayName = () => DAYS_NO[new Date().getDay()===0?6:new Date().getDay()-1]
-const daysAgo   = n  => { const d=new Date(); d.setDate(d.getDate()-n); return d.toISOString().split('T')[0] }
-const genFakturaNr = () => `SPAR-${new Date().getFullYear()}-${Math.floor(1000+Math.random()*9000)}`
+function getNextFakturaDate() {
+  const now   = new Date()
+  const first = new Date(now.getFullYear(), now.getMonth()+1, 1)
+  let mondays = 0
+  for (let d = new Date(first); d.getMonth() === first.getMonth(); d.setDate(d.getDate()+1)) {
+    if (d.getDay() === 1) {
+      mondays++
+      if (mondays === 2) return d.toISOString().split('T')[0]
+    }
+  }
+  return daysFromNow(30)
+}
 
-function getSessionRegistrationState(session, nowStr) {
+function getFritidskortstatus(member) {
+  if (!member.fritidskort) return null
+  const start = new Date(member.fritidskort.startDate)
+  const end   = new Date(start)
+  end.setMonth(end.getMonth() + FRITIDSKORT_MONTHS)
+  const today = new Date()
+  return {
+    active:   today < end,
+    endDate:  end.toISOString().split('T')[0],
+    daysLeft: Math.max(0, Math.floor((end - today) / 86400000)),
+  }
+}
+
+function getSessionState(session, nowStr) {
   const now    = toMins(nowStr || nowHHMM())
   const start  = toMins(session.start)
   const end    = toMins(session.end)
@@ -68,457 +119,610 @@ function getSessionRegistrationState(session, nowStr) {
   if (now < start - 30)          return { open:false, late:false, minsIn, reason:'not_open_yet' }
   if (now > end)                  return { open:false, late:false, minsIn, reason:'ended' }
   if (minsIn > LATE_CUTOFF_MINS) return { open:false, late:true,  minsIn, reason:'closed_late' }
-  return { open:true, late:minsIn>0, minsIn }
+  return { open:true, late:minsIn > 0, minsIn }
 }
 
-const getOpenSessions   = (day,now) => (SCHEDULE[day||todayName()]||[]).filter(s => getSessionRegistrationState(s,now).open)
-const getActiveSessions = (day,now) => (SCHEDULE[day||todayName()]||[]).filter(s => { const st=getSessionRegistrationState(s,now); return st.open||st.reason==='closed_late' })
+function getOpenSessions(day, now) {
+  return (SCHEDULE[day || todayName()] || []).filter(s => getSessionState(s, now).open)
+}
 
-function calcEligibility(attended, total) {
-  if (total===0) return { ...ELIGIBILITY_RULES.red, pct:0 }
+function calcElig(attended, total) {
+  if (total === 0) return { label:'Ikke kampklar', color:'#e63946', bg:'#2e0a0e', pct:0 }
   const pct = Math.round((attended/total)*100)
-  if (pct >= ELIGIBILITY_RULES.green.min)  return { ...ELIGIBILITY_RULES.green,  pct }
-  if (pct >= ELIGIBILITY_RULES.yellow.min) return { ...ELIGIBILITY_RULES.yellow, pct }
-  return { ...ELIGIBILITY_RULES.red, pct }
+  if (pct >= 80) return { label:'Kampklar',    color:'#4caf72', bg:'#0d2e1a', pct }
+  if (pct >= 60) return { label:'Må vurderes', color:'#f5c842', bg:'#2e2600', pct }
+  return { label:'Ikke kampklar', color:'#e63946', bg:'#2e0a0e', pct }
 }
 
 function getMiStatus(member) {
   if (!member || member.isGuest || member.notMember) return 'not_member'
+  if (member.betalingStatus === 'inkasso') return 'inkasso'
   if (member.miUnpaid) return 'unpaid'
-  if (member.miActive===false || (member.miExpires && member.miExpires<todayISO())) return 'expired'
+  if (member.miActive === false || (member.miExpires && member.miExpires < todayISO())) return 'expired'
   return 'active'
 }
 
-const MI_STATUS_DISPLAY = {
-  active:     { label:'Aktiv',           color:'#4caf72', bg:'#0d2e1a' },
-  expired:    { label:'Utløpt',          color:'#e63946', bg:'#2e0a0e' },
-  unpaid:     { label:'Ubetalt faktura', color:'#f5c842', bg:'#2e2600' },
-  not_member: { label:'Ikke medlem',     color:'#777',    bg:'#1a1a1a' },
-}
-
-function mockMinIdrettFetch() {
+function mockMIFetch() {
   return new Promise(res => setTimeout(() => {
-    const members = [
-      { id:'mi_1',  name:'Torpal Merjoev',  disc:'MMA',         role:'athlete', expires:'2025-12-31', active:true,  unpaid:false, phone:'+4791234567' },
-      { id:'mi_2',  name:'Erik Strand',     disc:'MMA',         role:'coach',   expires:'2025-12-31', active:true,  unpaid:false, phone:'+4792345678' },
-      { id:'mi_3',  name:'Marcus Dahl',     disc:'Boksing',     role:'coach',   expires:'2025-12-31', active:true,  unpaid:false, phone:'+4793456789' },
-      { id:'mi_4',  name:'Bjørn Eriksen',   disc:'Boksing',     role:'athlete', expires:'2025-12-31', active:true,  unpaid:false, phone:'+4794567890' },
-      { id:'mi_5',  name:'Lena Hagen',      disc:'Kickboksing', role:'athlete', expires:'2025-12-31', active:true,  unpaid:false, phone:'+4795678901' },
-      { id:'mi_6',  name:'Nora Vik',        disc:'Grappling',   role:'athlete', expires:'2025-12-31', active:true,  unpaid:false, phone:'+4796789012' },
-      { id:'mi_7',  name:'Anders Haugen',   disc:'MMA',         role:'athlete', expires:'2025-12-31', active:true,  unpaid:false, phone:'+4797890123' },
-      { id:'mi_8',  name:'Sofie Lie',       disc:'Muay Thai',   role:'athlete', expires:'2025-12-31', active:true,  unpaid:true,  phone:'+4798901234' },
-      { id:'mi_9',  name:'Jonas Berg',      disc:'Boksing',     role:'athlete', expires:'2024-06-30', active:false, unpaid:false, phone:'+4799012345' },
-      { id:'mi_10', name:'Emilie Sørensen', disc:'Kickboksing', role:'athlete', expires:'2025-12-31', active:true,  unpaid:false, phone:'+4790123456' },
-      { id:'mi_11', name:'Tobias Moe',      disc:'MMA',         role:'athlete', expires:'2025-12-31', active:true,  unpaid:false, phone:'+4791122334' },
-      { id:'mi_12', name:'Ylva Næss',       disc:'Grappling',   role:'athlete', expires:'2025-12-31', active:true,  unpaid:false, phone:'+4792233445' },
-    ]
-    res({ members, fetchedAt: new Date().toISOString() })
+    res({ fetchedAt: new Date().toISOString(), members: [
+      { id:'mi_1',  name:'Torpal Merjoev',  disc:'MMA',         role:'athlete', expires:'2025-12-31', active:true,  unpaid:false, phone:'+4791234567', email:'torpal@example.com',   birthDate:'2000-03-15' },
+      { id:'mi_2',  name:'Erik Strand',     disc:'MMA',         role:'coach',   expires:'2025-12-31', active:true,  unpaid:false, phone:'+4792345678', email:'erik@example.com',     birthDate:'1985-07-22' },
+      { id:'mi_3',  name:'Marcus Dahl',     disc:'Boksing',     role:'coach',   expires:'2025-12-31', active:true,  unpaid:false, phone:'+4793456789', email:'marcus@example.com',   birthDate:'1980-11-05' },
+      { id:'mi_4',  name:'Bjørn Eriksen',   disc:'Boksing',     role:'athlete', expires:'2025-12-31', active:true,  unpaid:false, phone:'+4794567890', email:'bjorn@example.com',    birthDate:'1995-04-18' },
+      { id:'mi_5',  name:'Lena Hagen',      disc:'Kickboksing', role:'athlete', expires:'2025-12-31', active:true,  unpaid:false, phone:'+4795678901', email:'lena@example.com',     birthDate:'2008-09-30' },
+      { id:'mi_6',  name:'Nora Vik',        disc:'Grappling',   role:'athlete', expires:'2025-12-31', active:true,  unpaid:false, phone:'+4796789012', email:'nora@example.com',     birthDate:'2010-01-12' },
+      { id:'mi_7',  name:'Anders Haugen',   disc:'MMA',         role:'athlete', expires:'2025-12-31', active:true,  unpaid:false, phone:'+4797890123', email:'anders@example.com',   birthDate:'1998-06-25' },
+      { id:'mi_8',  name:'Sofie Lie',       disc:'Muay Thai',   role:'athlete', expires:'2025-12-31', active:true,  unpaid:true,  phone:'+4798901234', email:'sofie@example.com',    birthDate:'2007-12-03' },
+      { id:'mi_9',  name:'Jonas Berg',      disc:'Boksing',     role:'athlete', expires:'2024-06-30', active:false, unpaid:false, phone:'+4799012345', email:'jonas@example.com',    birthDate:'1992-08-14' },
+      { id:'mi_10', name:'Emilie Sørensen', disc:'Kickboksing', role:'athlete', expires:'2025-12-31', active:true,  unpaid:false, phone:'+4790123456', email:'emilie@example.com',   birthDate:'2009-05-20' },
+      { id:'mi_11', name:'Tobias Moe',      disc:'MMA',         role:'athlete', expires:'2025-12-31', active:true,  unpaid:false, phone:'+4791122334', email:'tobias@example.com',   birthDate:'2011-02-28' },
+      { id:'mi_12', name:'Ylva Næss',       disc:'Grappling',   role:'athlete', expires:'2025-12-31', active:true,  unpaid:false, phone:'+4792233445', email:'ylva@example.com',     birthDate:'2006-10-08' },
+    ]})
   }, 900))
 }
 
-function seedAttendance(members) {
-  const attendance = []
+function seedAtt(members) {
+  const att = []
   members.forEach(m => {
-    for (let i=0; i<90; i++) {
+    for (let i = 0; i < 90; i++) {
       const date    = daysAgo(i)
       const dayIdx  = new Date(date).getDay()
-      const dayName = DAYS_NO[dayIdx===0?6:dayIdx-1]
-      const sessions = SCHEDULE[dayName]||[]
-      if (!sessions.length || Math.random()>0.55) continue
-      const sess   = sessions[Math.floor(Math.random()*sessions.length)]
-      const r      = Math.random()
-      const status = r<0.70?'attended':r<0.88?'strength':'absent'
-      const isLate = status!=='absent' && Math.random()>0.80
-      attendance.push({
-        id:`a${attendance.length}`, memberId:m.id, memberName:m.name,
-        date, day:dayName, session:sess.name, disc:sess.disc, status,
-        isLate, lateMinutes:isLate?Math.floor(Math.random()*19)+1:0,
-        injuryNote:status==='strength'&&Math.random()>0.6?'Skulder':null,
-        registeredAt:sess.start, createdAt:new Date(date).toISOString(), miStatus:'active',
+      const dayName = DAYS_NO[dayIdx === 0 ? 6 : dayIdx-1]
+      const sessions= SCHEDULE[dayName] || []
+      if (!sessions.length || Math.random() > 0.55) continue
+      const sess    = sessions[Math.floor(Math.random()*sessions.length)]
+      const r       = Math.random()
+      const status  = r < 0.70 ? 'attended' : r < 0.88 ? 'strength' : 'absent'
+      const isLate  = status !== 'absent' && Math.random() > 0.80
+      att.push({
+        id: 'a' + att.length,
+        memberId: m.id,
+        memberName: m.name,
+        date, day: dayName,
+        session: sess.name, disc: sess.disc,
+        status, isLate,
+        lateMinutes: isLate ? Math.floor(Math.random()*19)+1 : 0,
+        injuryNote: null,
+        registeredAt: sess.start,
+        createdAt: new Date(date).toISOString(),
+        miStatus: 'active',
       })
     }
   })
-  return attendance
+  return att
 }
 
 const T = {
   bg:'#080808', surface:'#111', card:'#161616', border:'#252525',
   accent:'#e8006a', accentL:'#ff4da6',
   gold:'#f4a261', green:'#4caf72', yellow:'#f5c842', red:'#e63946',
-  blue:'#60a5fa', orange:'#fb923c',
+  blue:'#60a5fa', orange:'#fb923c', purple:'#a855f7',
   text:'#f2f2f2', muted:'#777', dim:'#444',
 }
 
-const inputSt = { width:'100%', padding:'14px 16px', borderRadius:10, border:`2px solid ${T.border}`, background:T.card, color:T.text, fontSize:15, outline:'none', boxSizing:'border-box' }
-const selSt   = { padding:'8px 10px', borderRadius:9, border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:12, outline:'none' }
+const selSt  = { padding:'8px 10px', borderRadius:9, border:'1px solid #252525', background:'#111', color:'#f2f2f2', fontSize:12, outline:'none' }
+const inputSt= { width:'100%', padding:'11px 14px', borderRadius:10, border:'1px solid #252525', background:'#111', color:'#f2f2f2', fontSize:14, outline:'none', boxSizing:'border-box' }
 
 function Screen({ children, center }) {
-  return <div style={{ display:'flex', flexDirection:'column', alignItems:center?'center':'flex-start', minHeight:'calc(100vh - 58px)', padding:'22px 16px', maxWidth:520, margin:'0 auto' }}>{children}</div>
-}
-function STitle({ children }) { return <div style={{ fontSize:20, fontWeight:900, marginBottom:12 }}>{children}</div> }
-function BigBtn({ children, onClick, style={}, disabled=false }) {
-  return <button onClick={onClick} disabled={disabled} style={{ width:'100%', padding:'17px 0', borderRadius:13, border:'none', background:disabled?T.dim:T.accent, color:'#fff', fontWeight:900, fontSize:16, cursor:disabled?'not-allowed':'pointer', opacity:disabled?0.6:1, ...style }}>{children}</button>
-}
-function BackBtn({ onClick }) {
-  return <button onClick={onClick} style={{ alignSelf:'flex-start', background:'none', border:'none', color:T.muted, cursor:'pointer', fontSize:13, marginBottom:14, padding:0 }}>← Tilbake</button>
-}
-function Tag({ children, c }) {
-  return <span style={{ padding:'3px 8px', borderRadius:99, background:`${c}22`, color:c, fontSize:10, fontWeight:800, whiteSpace:'nowrap' }}>{children}</span>
-}
-function Avatar({ name, size=34 }) {
-  const initials = name.split(' ').map(w=>w[0]).slice(0,2).join('').toUpperCase()
-  const hue = (name.charCodeAt(0)*37+(name.charCodeAt(name.length-1)||0)*17)%360
-  return <div style={{ width:size, height:size, borderRadius:'50%', background:`hsl(${hue},45%,22%)`, border:`1px solid hsl(${hue},45%,35%)`, display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, fontSize:size*0.35, color:`hsl(${hue},70%,70%)`, flexShrink:0 }}>{initials}</div>
-}
-function PctBar({ pct, color }) {
-  return <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-    <div style={{ width:48, background:T.dim, borderRadius:4, height:6, overflow:'hidden', flexShrink:0 }}>
-      <div style={{ width:`${pct}%`, height:'100%', background:color, borderRadius:4 }}/>
+  return (
+    <div style={{ display:'flex', flexDirection:'column', alignItems: center ? 'center' : 'flex-start', minHeight:'calc(100vh - 58px)', padding:'18px 14px', maxWidth:520, margin:'0 auto' }}>
+      {children}
     </div>
-    <span style={{ color, fontWeight:800, fontSize:12 }}>{pct}%</span>
-  </div>
+  )
 }
-function SpartacusLogo({ size=64, showText=true }) {
-  return <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:showText?10:0 }}>
-    <svg width={size*0.75} height={size} viewBox="0 0 75 100" fill="none">
-      <path d="M30 2 C28 8 24 14 20 18 C25 15 32 12 38 10 C36 14 33 20 32 26 L38 20 C42 14 48 8 52 4 C48 6 44 10 40 14 C42 8 40 4 38 2 Z" fill="#fff" opacity="0.92"/>
-      <path d="M15 30 C15 18 22 10 37.5 10 C53 10 60 18 60 30 L60 58 C60 68 53 75 37.5 75 C22 75 15 68 15 58 Z" fill="#d0d0d0"/>
-      <path d="M15 30 C15 18 22 10 37.5 10 C30 10 24 18 24 30 L24 58 C24 68 28 74 37.5 75 C22 75 15 68 15 58 Z" fill="#a0a0a0"/>
-      <path d="M22 42 L22 54 C22 60 26 64 31 64 L37.5 64 L37.5 42 Z" fill="#1a1a1a"/>
-      <path d="M53 42 L53 54 C53 60 49 64 44 64 L37.5 64 L37.5 42 Z" fill="#111"/>
-      <rect x="35" y="40" width="5" height="28" rx="2.5" fill="#b0b0b0"/>
-      <path d="M22 50 C18 52 16 58 18 64 C20 70 26 74 30 74 L22 50 Z" fill="#b8b8b8"/>
-      <path d="M53 50 C57 52 59 58 57 64 C55 70 49 74 45 74 L53 50 Z" fill="#a8a8a8"/>
-      <rect x="12" y="38" width="51" height="6" rx="3" fill="#c0c0c0"/>
-    </svg>
-    {showText && <div style={{ fontWeight:900, fontSize:size*0.28, letterSpacing:'0.15em', color:'#fff', textTransform:'uppercase', lineHeight:1 }}>SPARTACUS</div>}
-  </div>
+
+function BigBtn({ children, onClick, style, disabled }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      style={{ width:'100%', padding:'15px', borderRadius:13, border:'none', background: disabled ? T.dim : T.accent, color:'#fff', fontWeight:900, fontSize:15, cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.6 : 1, ...style }}
+    >
+      {children}
+    </button>
+  )
 }
-function MiStatusBanner({ status }) {
-  const d     = MI_STATUS_DISPLAY[status]||MI_STATUS_DISPLAY['not_member']
-  const icons = { active:'✅', expired:'⛔', unpaid:'⚠️', not_member:'🚫' }
-  const notes = { active:'Gyldig medlem – Min Idrett', expired:'Utløpt – kontakt trener', unpaid:'Ubetalt faktura – kontakt trener', not_member:'Ikke registrert i Min Idrett – gjest' }
-  return <div style={{ width:'100%', padding:'10px 14px', borderRadius:9, marginBottom:14, background:d.bg, border:`1.5px solid ${d.color}`, color:d.color, fontSize:13, fontWeight:700, display:'flex', alignItems:'center', gap:8 }}>
-    <span style={{ fontSize:18 }}>{icons[status]}</span>
-    <div><div>{d.label}</div><div style={{ fontWeight:500, opacity:0.8, fontSize:11 }}>{notes[status]}</div></div>
-  </div>
+
+function BackBtn({ onClick }) {
+  return (
+    <button onClick={onClick} style={{ background:'none', border:'none', color:T.muted, cursor:'pointer', fontSize:13, marginBottom:12, padding:0 }}>
+      ← Tilbake
+    </button>
+  )
 }
-function MiStatusBar({ counts }) {
-  const items = [
-    { key:'active',     icon:'✅', label:'Aktive',         color:T.green  },
-    { key:'expired',    icon:'⛔', label:'Utløpt',          color:T.red    },
-    { key:'unpaid',     icon:'⚠️', label:'Ubetalt faktura', color:T.yellow },
-    { key:'not_member', icon:'🚫', label:'Ikke medlem',     color:T.muted  },
-  ]
-  return <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(130px,1fr))', gap:8, marginBottom:14 }}>
-    {items.map(it => (
-      <div key={it.key} style={{ background:T.card, border:`1px solid ${it.key!=='active'&&counts[it.key]>0?it.color:T.border}`, borderRadius:11, padding:'12px 14px', display:'flex', alignItems:'center', gap:10 }}>
-        <span style={{ fontSize:18 }}>{it.icon}</span>
-        <div>
-          <div style={{ fontWeight:900, fontSize:22, color:it.color, lineHeight:1 }}>{counts[it.key]||0}</div>
-          <div style={{ fontSize:10, color:T.muted, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.05em', marginTop:2 }}>{it.label}</div>
+
+function Tag({ children, c }) {
+  return (
+    <span style={{ padding:'3px 8px', borderRadius:99, background: c + '22', color:c, fontSize:10, fontWeight:800, whiteSpace:'nowrap' }}>
+      {children}
+    </span>
+  )
+}
+
+function Avatar({ name, size }) {
+  size = size || 34
+  const initials = name.split(' ').map(w => w[0]).slice(0,2).join('').toUpperCase()
+  const hue = (name.charCodeAt(0)*37 + (name.charCodeAt(name.length-1)||0)*17) % 360
+  return (
+    <div style={{ width:size, height:size, borderRadius:'50%', background:'hsl('+hue+',45%,22%)', border:'1px solid hsl('+hue+',45%,35%)', display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, fontSize:size*0.35, color:'hsl('+hue+',70%,70%)', flexShrink:0 }}>
+      {initials}
+    </div>
+  )
+}
+
+function SpartacusLogo({ size, showText }) {
+  size = size || 64
+  showText = showText !== false
+  return (
+    <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap: showText ? 10 : 0 }}>
+      <svg width={size*0.75} height={size} viewBox="0 0 75 100" fill="none">
+        <path d="M30 2 C28 8 24 14 20 18 C25 15 32 12 38 10 C36 14 33 20 32 26 L38 20 C42 14 48 8 52 4 C48 6 44 10 40 14 C42 8 40 4 38 2 Z" fill="#fff" opacity="0.92"/>
+        <path d="M15 30 C15 18 22 10 37.5 10 C53 10 60 18 60 30 L60 58 C60 68 53 75 37.5 75 C22 75 15 68 15 58 Z" fill="#d0d0d0"/>
+        <path d="M15 30 C15 18 22 10 37.5 10 C30 10 24 18 24 30 L24 58 C24 68 28 74 37.5 75 C22 75 15 68 15 58 Z" fill="#a0a0a0"/>
+        <path d="M22 42 L22 54 C22 60 26 64 31 64 L37.5 64 L37.5 42 Z" fill="#1a1a1a"/>
+        <path d="M53 42 L53 54 C53 60 49 64 44 64 L37.5 64 L37.5 42 Z" fill="#111"/>
+        <rect x="35" y="40" width="5" height="28" rx="2.5" fill="#b0b0b0"/>
+        <path d="M22 50 C18 52 16 58 18 64 C20 70 26 74 30 74 L22 50 Z" fill="#b8b8b8"/>
+        <path d="M53 50 C57 52 59 58 57 64 C55 70 49 74 45 74 L53 50 Z" fill="#a8a8a8"/>
+        <rect x="12" y="38" width="51" height="6" rx="3" fill="#c0c0c0"/>
+      </svg>
+      {showText && (
+        <div style={{ fontWeight:900, fontSize:size*0.28, letterSpacing:'0.15em', color:'#fff', textTransform:'uppercase', lineHeight:1 }}>
+          SPARTACUS
         </div>
-      </div>
-    ))}
-  </div>
+      )}
+    </div>
+  )
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// ROOT APP
-// ═══════════════════════════════════════════════════════════════════════════════
-export default function App() {
-  const [view, setView]             = useState('kiosk')
-  const [members, setMembers]       = usePersistentState(LS_MEMBERS, [])
-  const [attendance, setAttendance] = usePersistentState(LS_ATTENDANCE, [])
-  const [adminAuth, setAdminAuth]   = useState(false)
-  const [miStatus, setMiStatus]     = useState({ status:'idle', fetchedAt:null, count:0 })
+function StatusBar({ counts }) {
+  const items = [
+    { key:'active',      icon:'✅', label:'Aktive',     c:T.green  },
+    { key:'forfalt',     icon:'⚠️', label:'Forfalt',    c:T.yellow },
+    { key:'purret',      icon:'📬', label:'Purret',     c:T.orange },
+    { key:'inkasso',     icon:'⛔', label:'Inkasso',    c:T.red    },
+    { key:'fritidskort', icon:'🎫', label:'Fritidskort',c:T.purple },
+    { key:'junior',      icon:'🧒', label:'Junior',     c:T.blue   },
+    { key:'senior',      icon:'👤', label:'Senior',     c:T.gold   },
+  ].filter(i => counts[i.key] !== undefined && counts[i.key] > 0)
 
-  const syncMinIdrett = useCallback(async () => {
-    setMiStatus(s => ({ ...s, status:'syncing' }))
+  if (!items.length) return null
+
+  return (
+    <div style={{ display:'flex', flexWrap:'wrap', gap:6, marginBottom:12 }}>
+      {items.map(it => (
+        <div key={it.key} style={{ background:T.card, border:'1px solid ' + it.c + '44', borderRadius:10, padding:'8px 12px', display:'flex', alignItems:'center', gap:7 }}>
+          <span style={{ fontSize:14 }}>{it.icon}</span>
+          <div style={{ lineHeight:1 }}>
+            <div style={{ fontWeight:900, fontSize:16, color:it.c }}>{counts[it.key]}</div>
+            <div style={{ fontSize:9, color:T.muted, fontWeight:700, textTransform:'uppercase', marginTop:1 }}>{it.label}</div>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════
+// ROOT APP
+// ═══════════════════════════════════════════════════════════
+export default function App() {
+  const [view, setView]           = useState('kiosk')
+  const [members, setMembers]     = useState(() => lsGet(LS_MEMBERS, []))
+  const [attendance, setAtt]      = useState(() => lsGet(LS_ATTENDANCE, []))
+  const [overrides, setOverrides] = useState(() => lsGet(LS_OVERRIDES, {}))
+  const [fakturaer, setFakturaer] = useState(() => lsGet(LS_FAKTURAER, []))
+  const [spesial, setSpesial]     = useState(() => lsGet(LS_SPESIALAVTALER, {}))
+  const [adminAuth, setAdminAuth] = useState(false)
+  const [miSt, setMiSt]           = useState({ status:'idle', fetchedAt:null, count:0 })
+
+  const saveOverrides = useCallback(o => { lsSet(LS_OVERRIDES, o); setOverrides(o) }, [])
+  const saveSpesial   = useCallback(s => { lsSet(LS_SPESIALAVTALER, s); setSpesial(s) }, [])
+
+  const syncMI = useCallback(async () => {
+    setMiSt(s => ({ ...s, status:'syncing' }))
     try {
-      const result  = await mockMinIdrettFetch()
+      const result  = await mockMIFetch()
       const fetched = result.members.map(m => ({
-        id:m.id, name:m.name, disc:m.disc, phone:m.phone||'',
-        isCoach:m.role==='coach',
-        miActive:m.active, miExpires:m.expires,
-        miUnpaid:m.unpaid||false, notMember:false,
+        id: m.id, name: m.name, disc: m.disc,
+        phone: m.phone || '', email: m.email || '',
+        isCoach: m.role === 'coach',
+        miActive: m.active, miExpires: m.expires,
+        miUnpaid: m.unpaid || false, notMember: false,
+        birthDate: m.birthDate || '',
+        firstName:'', lastName:'', address:'', postalCode:'', city:'', gender:'',
       }))
       setMembers(prev => {
-        const imported = prev.filter(p => p.notMember)
-        const merged   = [...imported]
-        fetched.forEach(f => { if (!merged.find(m => m.id===f.id)) merged.push(f) })
-        localStorage.setItem(LS_MEMBERS, JSON.stringify(merged))
+        const saved      = lsGet(LS_MEMBERS, [])
+        const deleted    = lsGet(LS_DELETED, [])
+        const savedIds   = new Set(saved.map(m => m.id))
+        const deletedIds = new Set(deleted)
+        const toAdd      = fetched.filter(f => !savedIds.has(f.id) && !deletedIds.has(f.id))
+        const merged     = toAdd.length > 0 ? [...saved, ...toAdd] : saved
+        if (toAdd.length > 0) lsSet(LS_MEMBERS, merged)
         return merged
       })
-      setAttendance(prev => {
+      setAtt(prev => {
         if (prev.length > 0) return prev
-        const seeded = seedAttendance(fetched)
-        localStorage.setItem(LS_ATTENDANCE, JSON.stringify(seeded))
+        const seeded = seedAtt(fetched)
+        lsSet(LS_ATTENDANCE, seeded)
         return seeded
       })
-      setMiStatus({ status:'ok', fetchedAt:result.fetchedAt, count:result.members.length })
+      setMiSt({ status:'ok', fetchedAt: result.fetchedAt, count: result.members.length })
     } catch {
-      setMiStatus(s => ({ ...s, status:'error' }))
+      setMiSt(s => ({ ...s, status:'error' }))
     }
   }, [])
 
   useEffect(() => {
-    syncMinIdrett()
-    const iv = setInterval(syncMinIdrett, MIN_IDRETT_POLL_MS)
+    syncMI()
+    const iv = setInterval(syncMI, 60000)
     return () => clearInterval(iv)
-  }, [syncMinIdrett])
+  }, [syncMI])
 
-  const addAttendance = useCallback(e => setAttendance(prev => {
-    const updated = [{ id:`a${Date.now()}`, createdAt:new Date().toISOString(), ...e }, ...prev]
-    localStorage.setItem(LS_ATTENDANCE, JSON.stringify(updated))
-    return updated
-  }), [])
+  // Auto-escalate overdue invoices
+  useEffect(() => {
+    const today = todayISO()
+    let changed = false
+    const updated = fakturaer.map(f => {
+      if (f.betalingStatus === 'betalt' || f.betalingStatus === 'inkasso') return f
+      if (f.forfall < today) {
+        const days = Math.floor((new Date(today) - new Date(f.forfall)) / 86400000)
+        let ns = f.betalingStatus
+        if (days > 60  && ns !== 'inkasso') { ns = 'inkasso'; changed = true }
+        else if (days > 14 && ns === 'forfalt') { ns = 'purret'; changed = true }
+        else if (days > 0  && ns === 'ikke_forfalt') { ns = 'forfalt'; changed = true }
+        return { ...f, betalingStatus: ns }
+      }
+      return f
+    })
+    if (changed) { setFakturaer(updated); lsSet(LS_FAKTURAER, updated) }
+  }, [fakturaer])
 
-  const editAttendance = useCallback((id, patch) => setAttendance(prev => {
-    const updated = prev.map(a => a.id===id ? { ...a, ...patch } : a)
-    localStorage.setItem(LS_ATTENDANCE, JSON.stringify(updated))
-    return updated
-  }), [])
+  const addAtt = useCallback(e => {
+    setAtt(prev => {
+      const updated = [{ id:'a' + Date.now(), createdAt: new Date().toISOString(), ...e }, ...prev]
+      lsSet(LS_ATTENDANCE, updated)
+      return updated
+    })
+  }, [])
 
-  const deleteAttendance = useCallback(id => setAttendance(prev => {
-    const updated = prev.filter(a => a.id!==id)
-    localStorage.setItem(LS_ATTENDANCE, JSON.stringify(updated))
-    return updated
-  }), [])
+  const editAtt = useCallback((id, patch) => {
+    setAtt(prev => {
+      const updated = prev.map(a => a.id === id ? { ...a, ...patch } : a)
+      lsSet(LS_ATTENDANCE, updated)
+      return updated
+    })
+  }, [])
 
-  const syncColor = miStatus.status==='ok'?T.green:miStatus.status==='syncing'?T.yellow:miStatus.status==='error'?T.red:T.muted
-  const nav = [
-    { key:'kiosk',     label:'🏃 Innsjekk' },
-    { key:'schedule',  label:'📅 Timeplan' },
-    { key:'dashboard', label:`${adminAuth?'🔓':'🔐'} Admin` },
-  ]
+  const delAtt = useCallback(id => {
+    setAtt(prev => {
+      const updated = prev.filter(a => a.id !== id)
+      lsSet(LS_ATTENDANCE, updated)
+      return updated
+    })
+  }, [])
+
+  const syncColor = miSt.status === 'ok' ? T.green : miSt.status === 'syncing' ? T.yellow : miSt.status === 'error' ? T.red : T.muted
 
   return (
     <div style={{ fontFamily:"'DM Sans','Segoe UI',system-ui,sans-serif", background:T.bg, color:T.text, minHeight:'100vh' }}>
-      <div style={{ background:'#0d0d0d', borderBottom:`2px solid ${T.accent}`, padding:'8px 14px', display:'flex', alignItems:'center', justifyContent:'space-between', position:'sticky', top:0, zIndex:200, flexWrap:'wrap', gap:8 }}>
+      <div style={{ background:'#0d0d0d', borderBottom:'2px solid ' + T.accent, padding:'8px 14px', display:'flex', alignItems:'center', justifyContent:'space-between', position:'sticky', top:0, zIndex:200, flexWrap:'wrap', gap:8 }}>
         <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-          <SpartacusLogo size={32} showText={false}/>
-          <div style={{ fontWeight:900, fontSize:16, letterSpacing:'0.12em' }}>SPARTACUS</div>
+          <SpartacusLogo size={30} showText={false}/>
+          <div style={{ fontWeight:900, fontSize:15, letterSpacing:'0.12em' }}>SPARTACUS</div>
         </div>
-        <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-          <button onClick={syncMinIdrett} style={{ display:'flex', alignItems:'center', gap:5, padding:'5px 9px', borderRadius:7, border:`1px solid ${syncColor}55`, background:'transparent', color:syncColor, cursor:'pointer', fontSize:10, fontWeight:800 }}>
+        <div style={{ display:'flex', alignItems:'center', gap:5 }}>
+          <button onClick={syncMI} style={{ display:'flex', alignItems:'center', gap:5, padding:'5px 9px', borderRadius:7, border:'1px solid ' + syncColor + '55', background:'transparent', color:syncColor, cursor:'pointer', fontSize:10, fontWeight:800 }}>
             <span style={{ display:'inline-block', width:6, height:6, borderRadius:'50%', background:syncColor }}/>
-            {miStatus.status==='syncing'?'Synker…':miStatus.status==='ok'?`MI ${miStatus.count}`:miStatus.status==='error'?'Feil':'Min Idrett'}
+            {miSt.status === 'syncing' ? 'Synker…' : miSt.status === 'ok' ? 'MI ' + miSt.count : 'Min Idrett'}
           </button>
           <nav style={{ display:'flex', gap:3 }}>
-            {nav.map(n => (
-              <button key={n.key} onClick={() => setView(n.key)}
-                style={{ padding:'7px 10px', borderRadius:8, border:'none', background:view===n.key?T.accent:'transparent', color:view===n.key?'#fff':T.muted, cursor:'pointer', fontSize:11, fontWeight:700 }}>
+            {[{key:'kiosk',label:'🏃 Innsjekk'},{key:'schedule',label:'📅 Timeplan'},{key:'dashboard',label:(adminAuth ? '🔓' : '🔐') + ' Admin'}].map(n => (
+              <button key={n.key} onClick={() => setView(n.key)} style={{ padding:'7px 10px', borderRadius:8, border:'none', background: view === n.key ? T.accent : 'transparent', color: view === n.key ? '#fff' : T.muted, cursor:'pointer', fontSize:11, fontWeight:700 }}>
                 {n.label}
               </button>
             ))}
           </nav>
         </div>
       </div>
-      {view==='kiosk'     && <KioskView    members={members} onAdd={addAttendance}/>}
-      {view==='schedule'  && <ScheduleView/>}
-      {view==='dashboard' && <Dashboard    members={members} setMembers={setMembers} attendance={attendance} auth={adminAuth} setAuth={setAdminAuth} onEdit={editAttendance} onDelete={deleteAttendance} onSync={syncMinIdrett} miStatus={miStatus}/>}
+
+      {view === 'kiosk'     && <KioskView    members={members} setMembers={setMembers} attendance={attendance} onAdd={addAtt} overrides={overrides}/>}
+      {view === 'schedule'  && <ScheduleView overrides={overrides}/>}
+      {view === 'dashboard' && <Dashboard    members={members} setMembers={setMembers} attendance={attendance} auth={adminAuth} setAuth={setAdminAuth} editAtt={editAtt} delAtt={delAtt} syncMI={syncMI} miSt={miSt} overrides={overrides} saveOverrides={saveOverrides} onAdd={addAtt} fakturaer={fakturaer} setFakturaer={setFakturaer} spesial={spesial} saveSpesial={saveSpesial}/>}
     </div>
   )
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════
 // KIOSK
-// ═══════════════════════════════════════════════════════════════════════════════
-function KioskView({ members, onAdd }) {
-  const [step, setStep]              = useState('home')
-  const [query, setQuery]            = useState('')
-  const [session, setSession]        = useState(null)
-  const [sessionState, setSessState] = useState(null)
-  const [person, setPerson]          = useState(null)
-  const [status, setStatus]          = useState(null)
-  const [injuryNote, setInj]         = useState('')
-  const [miCheck, setMiCheck]        = useState(null)
-  const [checking, setChecking]      = useState(false)
+// ═══════════════════════════════════════════════════════════
+function KioskView({ members, setMembers, attendance, onAdd, overrides }) {
+  const [step, setStep]         = useState('home')
+  const [query, setQuery]       = useState('')
+  const [session, setSession]   = useState(null)
+  const [sessState, setSessState] = useState(null)
+  const [person, setPerson]     = useState(null)
+  const [status, setStatus]     = useState(null)
+  const [injuryNote, setInj]    = useState('')
+  const [miCheck, setMiCheck]   = useState(null)
+  const [regPhone, setRegPhone] = useState('')
+  const [regName, setRegName]   = useState('')
+  const [regStep, setRegStep]   = useState('phone')
   const inputRef = useRef()
 
-  const openSessions   = getOpenSessions()
-  const activeSessions = getActiveSessions()
+  const today        = todayISO()
+  const openSessions = getOpenSessions()
+  const filteredSess = openSessions.filter(s => {
+    const ov = overrides[ovKey(today, s.name)]
+    return !ov || ov.status === 'normal' || ov.status === 'open_mat'
+  })
 
-  useEffect(() => { if (step==='name') setTimeout(() => inputRef.current?.focus(), 80) }, [step])
+  useEffect(() => {
+    if (step === 'name') setTimeout(() => inputRef.current && inputRef.current.focus(), 80)
+  }, [step])
 
   const filtered = useMemo(() => {
     if (!query.trim()) return []
     const q = query.toLowerCase()
-    return members.filter(m => m.name.toLowerCase().includes(q)).slice(0,7)
+    return members.filter(m => m.name.toLowerCase().includes(q)).slice(0, 7)
   }, [query, members])
 
-  function reset() { setStep('home'); setQuery(''); setSession(null); setSessState(null); setPerson(null); setStatus(null); setInj(''); setChecking(false); setMiCheck(null) }
-
-  async function choosePerson(m) {
-    setPerson(m); setChecking(true)
-    await new Promise(r => setTimeout(r, 500))
-    const miSt = getMiStatus(m)
-    setMiCheck({ status:miSt, ...MI_STATUS_DISPLAY[miSt] })
-    setChecking(false)
-    if (openSessions.length===1)     { setSession(openSessions[0]); setSessState(getSessionRegistrationState(openSessions[0])); setStep('status') }
-    else if (openSessions.length>1)  setStep('session')
-    else                             setStep('closed')
+  function reset() {
+    setStep('home'); setQuery(''); setSession(null); setSessState(null)
+    setPerson(null); setStatus(null); setInj(''); setMiCheck(null)
+    setRegPhone(''); setRegName(''); setRegStep('phone')
   }
 
-  async function chooseGuest() {
-    const g = { name:query.trim(), isGuest:true, notMember:true }
-    setPerson(g); setChecking(true)
-    await new Promise(r => setTimeout(r, 400))
-    setMiCheck({ status:'not_member', ...MI_STATUS_DISPLAY['not_member'] })
-    setChecking(false)
-    if (openSessions.length===1)     { setSession(openSessions[0]); setSessState(getSessionRegistrationState(openSessions[0])); setStep('status') }
-    else if (openSessions.length>1)  setStep('session')
-    else                             setStep('closed')
+  function goToSession(m) {
+    setPerson(m)
+    const st = getMiStatus(m)
+    const display = {
+      active:     { label:'Aktiv',        color:T.green,  bg:'#0d2e1a' },
+      expired:    { label:'Utløpt',       color:T.yellow, bg:'#2e2600' },
+      inkasso:    { label:'Inkasso',      color:T.red,    bg:'#2e0a0e' },
+      unpaid:     { label:'Ubetalt',      color:T.yellow, bg:'#2e2600' },
+      not_member: { label:'Ikke medlem',  color:T.muted,  bg:'#1a1a1a' },
+    }[st] || { label:'Ukjent', color:T.muted, bg:'#1a1a1a' }
+    setMiCheck({ status:st, ...display })
+    if (filteredSess.length === 1) {
+      setSession(filteredSess[0])
+      setSessState(getSessionState(filteredSess[0]))
+      setStep('status')
+    } else if (filteredSess.length > 1) {
+      setStep('session')
+    } else {
+      setStep('closed')
+    }
   }
 
-  function pickSession(s) { setSession(s); setSessState(getSessionRegistrationState(s)); setStep('status') }
+  function handleSelfReg() {
+    const existing = members.find(m => m.phone === regPhone)
+    if (existing) {
+      goToSession(existing)
+      return
+    }
+    if (regStep === 'phone') {
+      setRegStep('info')
+      return
+    }
+    const ny = {
+      id: 'self_' + Date.now(),
+      name: regName.trim(),
+      phone: regPhone.trim(),
+      email: '', disc: 'MMA', isCoach: false,
+      miActive: false, miExpires: null, miUnpaid: false, notMember: true,
+      birthDate: '', gender: '', address: '', postalCode: '', city: '',
+      firstName: '', lastName: '',
+    }
+    const updated = [...members, ny]
+    setMembers(updated)
+    lsSet(LS_MEMBERS, updated)
+    goToSession(ny)
+  }
 
   function confirm() {
-    const isLate = sessionState?.late && sessionState?.minsIn>0
-    onAdd({ memberId:person.id||null, memberName:person.name, date:todayISO(), day:todayName(), session:session.name, disc:session.disc, status, isLate, lateMinutes:isLate?Math.max(0,Math.floor(sessionState.minsIn)):0, injuryNote:status==='strength'&&injuryNote.trim()?injuryNote.trim():null, registeredAt:nowHHMM(), miStatus:miCheck?.status||'not_member', isGuest:!!person.isGuest, isCoach:!!person.isCoach })
+    const isLate = (sessState && sessState.late && sessState.minsIn > 0) ? true : false
+    const lateMinutes = isLate ? Math.max(0, Math.floor(sessState.minsIn)) : 0
+    const injNote = (status === 'strength' && injuryNote.trim()) ? injuryNote.trim() : null
+    onAdd({
+      memberId:     person.id || null,
+      memberName:   person.name,
+      date:         today,
+      day:          todayName(),
+      session:      session.name,
+      disc:         session.disc,
+      status:       status,
+      isLate:       isLate,
+      lateMinutes:  lateMinutes,
+      injuryNote:   injNote,
+      registeredAt: nowHHMM(),
+      miStatus:     miCheck ? miCheck.status : 'not_member',
+      isGuest:      false,
+      isCoach:      person.isCoach ? true : false,
+    })
     setStep('done')
   }
 
-  if (step==='home') return (
+  const qrUrl = (typeof window !== 'undefined' ? window.location.origin : '') + '?reg=1'
+
+  if (step === 'home') return (
     <Screen center>
-      <div style={{ marginBottom:20 }}><SpartacusLogo size={90} showText/></div>
-      <div style={{ fontSize:15, fontWeight:800, letterSpacing:'0.18em', textTransform:'uppercase', color:'#ff4da6', marginBottom:28 }}>— Sterkere Sammen —</div>
-      <div style={{ color:T.muted, fontSize:12, marginBottom:20 }}>{todayName()} · {nowHHMM()}</div>
-      {openSessions.length>0 ? (
+      <div style={{ marginBottom:16 }}><SpartacusLogo size={80} showText/></div>
+      <div style={{ fontSize:13, fontWeight:800, letterSpacing:'0.18em', textTransform:'uppercase', color:'#ff4da6', marginBottom:20 }}>— Sterkere Sammen —</div>
+
+      {(SCHEDULE[todayName()] || []).map(s => {
+        const ov = overrides[ovKey(today, s.name)]
+        if (!ov || ov.status === 'normal') return null
+        const sd = SESSION_STATUSES.find(x => x.key === ov.status) || SESSION_STATUSES[0]
+        return (
+          <div key={s.name} style={{ width:'100%', padding:'9px 14px', borderRadius:9, marginBottom:6, background: sd.color + '18', border:'1px solid ' + sd.color + '55', color:sd.color, fontSize:12, fontWeight:700 }}>
+            {sd.icon} {s.name} — {sd.label}{ov.note ? ' · ' + ov.note : ''}
+          </div>
+        )
+      })}
+
+      {filteredSess.length > 0 ? (
         <div style={{ width:'100%' }}>
-          <div style={{ fontSize:11, fontWeight:800, color:T.muted, textTransform:'uppercase', letterSpacing:'0.1em', textAlign:'center', marginBottom:10 }}>Registrering åpen nå</div>
-          {openSessions.map(s => {
-            const st = getSessionRegistrationState(s)
-            return (
-              <div key={s.name} style={{ marginBottom:8, padding:'12px 16px', borderRadius:12, background:`${T.accent}18`, border:`1px solid ${T.accent}55`, textAlign:'center' }}>
-                <span style={{ fontWeight:800, color:T.accentL, fontSize:15 }}>{s.icon} {s.name}</span>
-                <span style={{ color:T.muted, fontSize:12, marginLeft:8 }}>{s.start}–{s.end}</span>
-                {st.late && st.minsIn<=LATE_CUTOFF_MINS && <div style={{ fontSize:11, color:T.orange, fontWeight:800, marginTop:4 }}>⏱ Sent · Stenger om {Math.ceil(LATE_CUTOFF_MINS-st.minsIn)} min</div>}
-              </div>
-            )
-          })}
-          <BigBtn onClick={() => setStep('name')} style={{ marginTop:14 }}>📋 REGISTRER OPPMØTE</BigBtn>
+          {filteredSess.map(s => (
+            <div key={s.name} style={{ marginBottom:6, padding:'10px 14px', borderRadius:10, background: T.accent + '18', border:'1px solid ' + T.accent + '44', textAlign:'center' }}>
+              <span style={{ fontWeight:800, color:T.accentL, fontSize:14 }}>{s.icon} {s.name}</span>
+              <span style={{ color:T.muted, fontSize:11, marginLeft:8 }}>{s.start}–{s.end}</span>
+            </div>
+          ))}
+          <BigBtn onClick={() => setStep('name')} style={{ marginTop:10, marginBottom:10 }}>
+            📋 REGISTRER OPPMØTE
+          </BigBtn>
         </div>
       ) : (
-        <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:16, padding:24, textAlign:'center', width:'100%' }}>
-          <div style={{ fontSize:34, marginBottom:8 }}>🕐</div>
-          <div style={{ fontWeight:700, marginBottom:6 }}>Ingen registrering åpen akkurat nå</div>
-          <div style={{ color:T.muted, fontSize:13, marginBottom:4 }}>Åpner 30 min før – stenger {LATE_CUTOFF_MINS} min etter start</div>
-          {activeSessions.filter(s => getSessionRegistrationState(s).reason==='closed_late').map(s => (
-            <div key={s.name} style={{ marginTop:8, padding:'8px 12px', borderRadius:8, background:`${T.red}18`, border:`1px solid ${T.red}44`, fontSize:12, color:T.red }}>⛔ {s.icon} {s.name} — stengt</div>
-          ))}
-          <div style={{ display:'flex', flexDirection:'column', gap:5, marginTop:12 }}>
-            {(SCHEDULE[todayName()]||[]).map(s => (
-              <div key={s.name} style={{ padding:'8px 12px', borderRadius:8, background:T.surface, border:`1px solid ${T.border}`, display:'flex', justifyContent:'space-between', fontSize:13 }}>
-                <span>{s.icon} {s.name}</span><span style={{ color:T.muted }}>{s.start}–{s.end}</span>
-              </div>
-            ))}
-          </div>
+        <div style={{ background:T.card, border:'1px solid ' + T.border, borderRadius:14, padding:20, textAlign:'center', width:'100%', marginBottom:12 }}>
+          <div style={{ fontSize:30, marginBottom:6 }}>🕐</div>
+          <div style={{ fontWeight:700, marginBottom:4 }}>Ingen timer åpne nå</div>
+          <div style={{ color:T.muted, fontSize:12 }}>Åpner 30 min før timen</div>
         </div>
       )}
+
+      <div style={{ width:'100%', background:T.card, border:'1px solid ' + T.border, borderRadius:14, padding:14, marginBottom:12 }}>
+        <div style={{ fontWeight:800, fontSize:13, marginBottom:10 }}>📱 Ny? Meld deg inn med telefon</div>
+        {regStep === 'phone' && (
+          <div style={{ display:'flex', gap:8 }}>
+            <input value={regPhone} onChange={e => setRegPhone(e.target.value)} placeholder="+47 000 00 000" style={{ ...inputSt, flex:1 }} type="tel"/>
+            <button onClick={handleSelfReg} disabled={regPhone.trim().length < 8} style={{ padding:'11px 14px', borderRadius:9, border:'none', background:T.accent, color:'#fff', fontWeight:800, cursor:'pointer', opacity: regPhone.trim().length < 8 ? 0.5 : 1 }}>→</button>
+          </div>
+        )}
+        {regStep === 'info' && (
+          <div>
+            <div style={{ color:T.muted, fontSize:12, marginBottom:8 }}>Telefon ikke funnet. Skriv navn:</div>
+            <div style={{ display:'flex', gap:8 }}>
+              <input value={regName} onChange={e => setRegName(e.target.value)} placeholder="Fullt navn" style={{ ...inputSt, flex:1 }}/>
+              <button onClick={handleSelfReg} disabled={!regName.trim()} style={{ padding:'11px 14px', borderRadius:9, border:'none', background:T.green, color:'#fff', fontWeight:800, cursor:'pointer', opacity: !regName.trim() ? 0.5 : 1 }}>✓</button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div style={{ width:'100%', background:T.card, border:'1px solid ' + T.border, borderRadius:14, padding:14, textAlign:'center' }}>
+        <div style={{ fontWeight:800, fontSize:13, marginBottom:10 }}>📷 Skann QR for å melde deg inn</div>
+        <div style={{ background:'#fff', padding:10, borderRadius:12, display:'inline-block' }}>
+          <img src={'https://chart.googleapis.com/chart?cht=qr&chs=130x130&chl=' + encodeURIComponent(qrUrl)} width={130} height={130} alt="QR" style={{ display:'block' }}/>
+        </div>
+      </div>
     </Screen>
   )
 
-  if (step==='closed') return (
+  if (step === 'closed') return (
     <Screen center>
       <BackBtn onClick={reset}/>
-      <div style={{ fontSize:48, marginBottom:12 }}>⛔</div>
-      <div style={{ fontWeight:900, fontSize:20, marginBottom:8, color:T.red }}>Registrering stengt</div>
-      <div style={{ color:T.muted, fontSize:14, textAlign:'center', marginBottom:20 }}>Mer enn {LATE_CUTOFF_MINS} min er gått. Kontakt treneren.</div>
-      <BigBtn onClick={reset} style={{ background:T.surface, border:`1px solid ${T.border}`, color:T.muted }}>← Tilbake</BigBtn>
+      <div style={{ fontSize:40, marginBottom:10 }}>⛔</div>
+      <div style={{ fontWeight:900, fontSize:18, color:T.red }}>Ingen timer tilgjengelig</div>
+      <BigBtn onClick={reset} style={{ marginTop:16, background:T.surface, border:'1px solid ' + T.border, color:T.muted }}>← Tilbake</BigBtn>
     </Screen>
   )
 
-  if (step==='name') return (
+  if (step === 'name') return (
     <Screen>
       <BackBtn onClick={reset}/>
-      <div style={{ marginBottom:18, textAlign:'center' }}><SpartacusLogo size={44} showText={false}/></div>
-      <STitle>Hvem er du?</STitle>
-      <input ref={inputRef} style={{ width:'100%', padding:'16px 18px', borderRadius:12, border:`2px solid ${T.accent}`, background:T.card, color:T.text, fontSize:20, outline:'none', boxSizing:'border-box', marginBottom:8 }} placeholder="Skriv navn…" value={query} onChange={e => setQuery(e.target.value)} autoComplete="off"/>
-      {filtered.length>0 && (
-        <div style={{ width:'100%', background:T.card, border:`1px solid ${T.border}`, borderRadius:12, overflow:'hidden', marginBottom:8 }}>
-          {filtered.map(m => {
-            const miSt = getMiStatus(m); const d = MI_STATUS_DISPLAY[miSt]
-            return (
-              <button key={m.id} onClick={() => choosePerson(m)} style={{ width:'100%', padding:'13px 16px', background:'transparent', border:'none', borderBottom:`1px solid ${T.border}`, color:T.text, cursor:'pointer', textAlign:'left', display:'flex', alignItems:'center', gap:10, fontSize:15 }}>
-                <Avatar name={m.name}/><span style={{ flex:1, fontWeight:700 }}>{m.name}</span>
-                <span style={{ fontSize:11, color:T.muted }}>{m.disc}</span>
-                {m.isCoach && <Tag c={T.gold}>TRENER</Tag>}
-                <Tag c={d.color}>{d.label}</Tag>
-              </button>
-            )
-          })}
+      <div style={{ fontSize:18, fontWeight:900, marginBottom:10 }}>Hvem er du?</div>
+      <input
+        ref={inputRef}
+        style={{ width:'100%', padding:'15px 16px', borderRadius:12, border:'2px solid ' + T.accent, background:T.card, color:T.text, fontSize:18, outline:'none', boxSizing:'border-box', marginBottom:8 }}
+        placeholder="Skriv navn…"
+        value={query}
+        onChange={e => setQuery(e.target.value)}
+        autoComplete="off"
+      />
+      {filtered.length > 0 && (
+        <div style={{ width:'100%', background:T.card, border:'1px solid ' + T.border, borderRadius:12, overflow:'hidden', marginBottom:8 }}>
+          {filtered.map(m => (
+            <button key={m.id} onClick={() => goToSession(m)} style={{ width:'100%', padding:'12px 14px', background:'transparent', border:'none', borderBottom:'1px solid ' + T.border, color:T.text, cursor:'pointer', textAlign:'left', display:'flex', alignItems:'center', gap:10, fontSize:14 }}>
+              <Avatar name={m.name}/>
+              <span style={{ flex:1, fontWeight:700 }}>{m.name}</span>
+              {isJunior(m) && <Tag c={T.blue}>Junior</Tag>}
+              {m.isCoach && <Tag c={T.gold}>Trener</Tag>}
+            </button>
+          ))}
         </div>
       )}
-      {query.trim().length>=2 && filtered.length===0 && (
-        <div style={{ width:'100%', background:T.card, border:`1px solid ${T.border}`, borderRadius:10, padding:'14px 16px', color:T.muted, fontSize:14 }}>
-          Ikke funnet — <button onClick={chooseGuest} style={{ background:'none', border:'none', color:T.gold, fontWeight:800, cursor:'pointer', fontSize:14 }}>Fortsett som gjest →</button>
+      {query.trim().length >= 2 && filtered.length === 0 && (
+        <div style={{ width:'100%', background:T.card, border:'1px solid ' + T.border, borderRadius:10, padding:'12px 14px', color:T.muted, fontSize:13 }}>
+          Ikke funnet — registrer deg med telefon på forsiden
         </div>
       )}
     </Screen>
   )
 
-  if (step==='session') return (
+  if (step === 'session') return (
     <Screen>
       <BackBtn onClick={() => setStep('name')}/>
-      <STitle>Hvilken time?</STitle>
-      <div style={{ display:'flex', flexDirection:'column', gap:10, width:'100%' }}>
-        {openSessions.map(s => {
-          const st = getSessionRegistrationState(s)
-          return (
-            <button key={s.name} onClick={() => pickSession(s)} style={{ padding:'18px', borderRadius:14, border:`1px solid ${T.accent}55`, background:`${T.accent}15`, color:T.text, cursor:'pointer', textAlign:'left', display:'flex', gap:14, alignItems:'center' }}>
-              <span style={{ fontSize:28 }}>{s.icon}</span>
-              <div style={{ flex:1 }}><div style={{ fontWeight:800, fontSize:17 }}>{s.name}</div><div style={{ fontSize:12, color:T.muted }}>{s.start}–{s.end}</div></div>
-              {st.late && <Tag c={T.orange}>SENT</Tag>}
-            </button>
-          )
-        })}
-      </div>
+      <div style={{ fontSize:18, fontWeight:900, marginBottom:10 }}>Hvilken time?</div>
+      {filteredSess.map(s => {
+        const st = getSessionState(s)
+        return (
+          <button key={s.name} onClick={() => { setSession(s); setSessState(getSessionState(s)); setStep('status') }} style={{ width:'100%', marginBottom:8, padding:'16px', borderRadius:14, border:'1px solid ' + T.accent + '44', background: T.accent + '15', color:T.text, cursor:'pointer', textAlign:'left', display:'flex', gap:12, alignItems:'center' }}>
+            <span style={{ fontSize:26 }}>{s.icon}</span>
+            <div style={{ flex:1 }}>
+              <div style={{ fontWeight:800, fontSize:16 }}>{s.name}</div>
+              <div style={{ fontSize:12, color:T.muted }}>{s.start}–{s.end}</div>
+            </div>
+            {st.late && <Tag c={T.orange}>SENT</Tag>}
+          </button>
+        )
+      })}
     </Screen>
   )
 
-  if (step==='status') return (
+  if (step === 'status') return (
     <Screen>
-      <BackBtn onClick={() => openSessions.length>1?setStep('session'):setStep('name')}/>
-      {checking && <div style={{ color:T.muted, marginBottom:12, fontSize:13 }}>🔍 Sjekker Min Idrett…</div>}
-      {miCheck && !checking && <MiStatusBanner status={miCheck.status}/>}
-      {sessionState?.late && sessionState?.minsIn>0 && (
-        <div style={{ width:'100%', padding:'10px 14px', borderRadius:9, marginBottom:14, background:`${T.orange}18`, border:`1.5px solid ${T.orange}`, color:T.orange, fontSize:13, fontWeight:700, display:'flex', alignItems:'center', gap:8 }}>
-          <span style={{ fontSize:18 }}>⏱</span>
-          <div><div>Sent oppmøte – {Math.floor(sessionState.minsIn)} min etter start</div><div style={{ fontWeight:500, opacity:0.8, fontSize:11 }}>Registreres automatisk som sent</div></div>
+      <BackBtn onClick={() => filteredSess.length > 1 ? setStep('session') : setStep('name')}/>
+      {miCheck && (
+        <div style={{ width:'100%', padding:'9px 14px', borderRadius:9, marginBottom:12, background: miCheck.bg, border:'1.5px solid ' + miCheck.color, color:miCheck.color, fontSize:13, fontWeight:700 }}>
+          {miCheck.label}
         </div>
       )}
-      <div style={{ width:'100%', padding:'9px 14px', borderRadius:9, marginBottom:20, background:`${T.accent}15`, border:`1px solid ${T.accent}44`, textAlign:'center', fontSize:13 }}>
-        <span style={{ fontWeight:800, color:T.accentL }}>{session?.icon} {session?.name}</span>
-        <span style={{ color:T.muted, marginLeft:8 }}>{session?.start}–{session?.end}</span>
+      {sessState && sessState.late && sessState.minsIn > 0 && (
+        <div style={{ width:'100%', padding:'9px 14px', borderRadius:9, marginBottom:12, background: T.orange + '18', border:'1.5px solid ' + T.orange, color:T.orange, fontSize:13, fontWeight:700 }}>
+          ⏱ Sent – {Math.floor(sessState.minsIn)} min etter start
+        </div>
+      )}
+      <div style={{ width:'100%', padding:'8px 14px', borderRadius:9, marginBottom:16, background: T.accent + '15', border:'1px solid ' + T.accent + '44', textAlign:'center', fontSize:13 }}>
+        <span style={{ fontWeight:800, color:T.accentL }}>{session && session.icon} {session && session.name}</span>
+        <span style={{ color:T.muted, marginLeft:8 }}>{session && session.start}–{session && session.end}</span>
       </div>
-      <STitle>Hei, {person?.name.split(' ')[0]}! Velg status:</STitle>
-      <div style={{ display:'flex', flexDirection:'column', gap:10, width:'100%', marginBottom:16 }}>
+      <div style={{ fontSize:18, fontWeight:900, marginBottom:10 }}>
+        Hei, {person && person.name.split(' ')[0]}!
+      </div>
+      <div style={{ display:'flex', flexDirection:'column', gap:8, width:'100%', marginBottom:14 }}>
         {[
-          { key:'attended', icon:'✅', label:'Deltar',            desc:'Fullt oppmøte',              color:T.green  },
-          { key:'strength', icon:'💪', label:'Styrke/alternativ', desc:'Skade eller alternativ økt', color:T.yellow },
-          { key:'absent',   icon:'❌', label:'Melder fravær',     desc:'Kan ikke møte i dag',        color:T.red    },
+          { key:'attended', icon:'✅', label:'Deltar',            desc:'Fullt oppmøte',   color:T.green  },
+          { key:'strength', icon:'💪', label:'Styrke/alternativ', desc:'Alternativ økt',  color:T.yellow },
+          { key:'absent',   icon:'❌', label:'Melder fravær',     desc:'Kan ikke i dag',  color:T.red    },
         ].map(opt => (
-          <button key={opt.key} onClick={() => setStatus(opt.key)} style={{ padding:'16px 18px', borderRadius:13, border:`2px solid ${status===opt.key?opt.color:T.border}`, background:status===opt.key?`${opt.color}22`:T.card, color:T.text, cursor:'pointer', textAlign:'left', display:'flex', gap:14, alignItems:'center' }}>
-            <span style={{ fontSize:26 }}>{opt.icon}</span>
-            <div><div style={{ fontWeight:800, fontSize:16, color:status===opt.key?opt.color:T.text }}>{opt.label}</div><div style={{ fontSize:12, color:T.muted }}>{opt.desc}</div></div>
+          <button key={opt.key} onClick={() => setStatus(opt.key)} style={{ padding:'14px 16px', borderRadius:12, border:'2px solid ' + (status === opt.key ? opt.color : T.border), background: status === opt.key ? opt.color + '22' : T.card, color:T.text, cursor:'pointer', textAlign:'left', display:'flex', gap:12, alignItems:'center' }}>
+            <span style={{ fontSize:24 }}>{opt.icon}</span>
+            <div>
+              <div style={{ fontWeight:800, fontSize:15, color: status === opt.key ? opt.color : T.text }}>{opt.label}</div>
+              <div style={{ fontSize:11, color:T.muted }}>{opt.desc}</div>
+            </div>
           </button>
         ))}
       </div>
-      {status==='strength' && <input value={injuryNote} onChange={e => setInj(e.target.value)} placeholder="Skade / kommentar (valgfritt)…" style={{ width:'100%', padding:'12px 16px', borderRadius:10, border:`1px solid ${T.border}`, background:T.card, color:T.text, fontSize:14, outline:'none', boxSizing:'border-box', marginBottom:12 }}/>}
+      {status === 'strength' && (
+        <input value={injuryNote} onChange={e => setInj(e.target.value)} placeholder="Kommentar…" style={{ ...inputSt, marginBottom:10 }}/>
+      )}
       {status && <BigBtn onClick={confirm}>BEKREFT →</BigBtn>}
     </Screen>
   )
 
-  if (step==='done') return (
+  if (step === 'done') return (
     <Screen center>
-      <SpartacusLogo size={70} showText={false}/>
-      <div style={{ fontSize:26, fontWeight:900, color:T.green, marginBottom:6, marginTop:12 }}>{status==='absent'?'Fravær registrert!':'God trening! 💪'}</div>
-      <div style={{ color:T.muted, marginBottom:4 }}>{person?.name}</div>
-      <div style={{ color:T.accent, fontWeight:700, marginBottom:4 }}>{session?.icon} {session?.name} · {session?.start}</div>
-      {sessionState?.late && sessionState.minsIn>0 && status!=='absent' && <div style={{ color:T.orange, fontSize:12, fontWeight:800, marginBottom:8 }}>⏱ Registrert som sent ({Math.floor(sessionState.minsIn)} min)</div>}
-      <div style={{ fontSize:13, fontWeight:800, color:'#ff4da6', letterSpacing:'0.12em', marginBottom:24 }}>— Sterkere Sammen —</div>
+      <SpartacusLogo size={60} showText={false}/>
+      <div style={{ fontSize:22, fontWeight:900, color:T.green, marginBottom:4, marginTop:10 }}>
+        {status === 'absent' ? 'Fravær registrert!' : 'Jobb hardt i dag! 💪'}
+      </div>
+      <div style={{ color:T.muted, marginBottom:2 }}>{person && person.name}</div>
+      <div style={{ color:T.accent, fontWeight:700, marginBottom:20 }}>
+        {session && session.icon} {session && session.name}
+      </div>
       <BigBtn onClick={reset}>← Neste person</BigBtn>
     </Screen>
   )
@@ -526,40 +730,45 @@ function KioskView({ members, onAdd }) {
   return null
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SCHEDULE
-// ═══════════════════════════════════════════════════════════════════════════════
-function ScheduleView() {
-  const today = todayName(); const now = nowHHMM()
+// ═══════════════════════════════════════════════════════════
+// SCHEDULE VIEW — horisontal
+// ═══════════════════════════════════════════════════════════
+function ScheduleView({ overrides }) {
+  const today     = todayName()
+  const now       = nowHHMM()
+  const todayDate = todayISO()
+
   return (
-    <div style={{ padding:'16px 14px', maxWidth:680, margin:'0 auto' }}>
-      <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:16, overflow:'hidden' }}>
-        <div style={{ background:T.accent, padding:'14px 18px', textAlign:'center' }}>
-          <div style={{ fontWeight:900, fontSize:18, letterSpacing:2 }}>📅 SPARTACUS TIMEPLAN</div>
-          <div style={{ fontSize:11, color:'rgba(255,255,255,0.7)', marginTop:2 }}>Registrering åpner 30 min før · stenger {LATE_CUTOFF_MINS} min etter start</div>
-        </div>
+    <div style={{ padding:'14px 10px', overflowX:'auto' }}>
+      <div style={{ fontWeight:900, fontSize:18, marginBottom:14, textAlign:'center', color:T.accent, letterSpacing:2 }}>
+        📅 SPARTACUS TIMEPLAN
+      </div>
+      <div style={{ display:'flex', gap:8, minWidth:'fit-content' }}>
         {DAYS_NO.map(day => {
-          const isToday = day===today
+          const isToday = day === today
           return (
-            <div key={day} style={{ borderBottom:`1px solid ${T.border}`, opacity:isToday?1:0.5 }}>
-              <div style={{ padding:'9px 16px', background:isToday?`${T.accent}22`:'transparent', display:'flex', gap:8, alignItems:'center' }}>
-                <span style={{ fontWeight:900, fontSize:12, color:isToday?T.accent:'#fff', textTransform:'uppercase', letterSpacing:1 }}>{day}</span>
-                {isToday && <Tag c={T.accent}>I DAG</Tag>}
+            <div key={day} style={{ minWidth:150, flex:1, background:T.card, border:'1px solid ' + (isToday ? T.accent : T.border), borderRadius:14, overflow:'hidden', opacity: isToday ? 1 : 0.65 }}>
+              <div style={{ padding:'10px 12px', background: isToday ? T.accent + '22' : 'transparent', textAlign:'center', borderBottom:'1px solid ' + T.border }}>
+                <div style={{ fontWeight:900, fontSize:11, color: isToday ? T.accent : T.muted, textTransform:'uppercase', letterSpacing:1 }}>{day}</div>
+                {isToday && <div style={{ fontSize:9, color:T.accent, fontWeight:800, marginTop:2 }}>I DAG</div>}
               </div>
-              <div style={{ padding:'0 16px 10px', display:'flex', flexDirection:'column', gap:5 }}>
+              <div style={{ padding:8 }}>
                 {SCHEDULE[day].map(s => {
-                  const st    = isToday ? getSessionRegistrationState(s, now) : null
-                  const live  = st?.open; const late = st?.late&&st?.open; const closed = st?.reason==='closed_late'
+                  const st          = isToday ? getSessionState(s, now) : null
+                  const live        = st && st.open
+                  const closed      = st && st.reason === 'closed_late'
+                  const ov          = isToday ? overrides[ovKey(todayDate, s.name)] : null
+                  const ovSt        = ov ? SESSION_STATUSES.find(x => x.key === ov.status) : null
+                  const isCancelled = ov && ov.status !== 'normal' && ov.status !== 'open_mat'
                   return (
-                    <div key={s.name} style={{ display:'flex', alignItems:'flex-start', gap:10, padding:'8px 12px', borderRadius:9, background:live?`${T.green}18`:closed?`${T.red}10`:T.surface, border:`1px solid ${live?T.green:closed?T.red:T.border}` }}>
-                      <span style={{ fontSize:16, flexShrink:0, marginTop:1 }}>{s.icon}</span>
-                      <div style={{ flex:1 }}><div style={{ fontWeight:800, color:live?T.green:closed?T.red:T.text, fontSize:13 }}>{s.name}</div>{s.desc&&<div style={{ fontSize:10, color:T.muted }}>{s.desc}</div>}</div>
-                      <div style={{ textAlign:'right', flexShrink:0 }}>
-                        <div style={{ fontSize:11, color:T.muted, fontWeight:700 }}>{s.start}–{s.end}</div>
-                        {live&&!late&&<div style={{ fontSize:10, color:T.green,  fontWeight:800 }}>● ÅPEN</div>}
-                        {live&&late &&<div style={{ fontSize:10, color:T.orange, fontWeight:800 }}>⏱ SENT</div>}
-                        {closed     &&<div style={{ fontSize:10, color:T.red,    fontWeight:800 }}>⛔ STENGT</div>}
-                      </div>
+                    <div key={s.name} style={{ marginBottom:6, padding:'8px 10px', borderRadius:9, background: isCancelled ? T.red + '10' : live ? T.green + '18' : T.surface, border:'1px solid ' + (isCancelled ? T.red : live ? T.green : T.border) }}>
+                      <div style={{ fontSize:14, marginBottom:2 }}>{ovSt ? ovSt.icon : s.icon}</div>
+                      <div style={{ fontWeight:800, fontSize:12, color: isCancelled ? T.red : live ? T.green : T.text, lineHeight:1.2 }}>{s.name}</div>
+                      <div style={{ fontSize:10, color:T.muted, marginTop:3 }}>{s.start}–{s.end}</div>
+                      {isCancelled && <div style={{ fontSize:9, color:T.red, fontWeight:800, marginTop:2 }}>{ovSt && ovSt.label.toUpperCase()}</div>}
+                      {!isCancelled && live && <div style={{ fontSize:9, color:T.green, fontWeight:800, marginTop:2 }}>● ÅPEN</div>}
+                      {!isCancelled && closed && <div style={{ fontSize:9, color:T.red, fontWeight:800, marginTop:2 }}>⛔ STENGT</div>}
+                      {ov && ov.note && <div style={{ fontSize:9, color:T.muted, marginTop:2, fontStyle:'italic' }}>{ov.note}</div>}
                     </div>
                   )
                 })}
@@ -572,319 +781,475 @@ function ScheduleView() {
   )
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════
 // DASHBOARD
-// ═══════════════════════════════════════════════════════════════════════════════
-function Dashboard({ members, setMembers, attendance, auth, setAuth, onEdit, onDelete, onSync, miStatus }) {
-  const [tab, setTab]      = useState('overview')
-  const [loginUser, setLU] = useState('')
-  const [loginPass, setLP] = useState('')
-  const [loginErr, setLE]  = useState('')
-
-  const ADMINS = [{ username:'coach', password:'Spartacus#2023' }]
+// ═══════════════════════════════════════════════════════════
+function Dashboard({ members, setMembers, attendance, auth, setAuth, editAtt, delAtt, syncMI, miSt, overrides, saveOverrides, onAdd, fakturaer, setFakturaer, spesial, saveSpesial }) {
+  const [tab, setTab]     = useState('overview')
+  const [loginUser, setLU]= useState('')
+  const [loginPass, setLP]= useState('')
+  const [loginErr, setLE] = useState('')
 
   function handleLogin() {
-    const c = ADMINS.find(a => a.username.toLowerCase()===loginUser.toLowerCase().trim() && a.password===loginPass)
-    if (c) { setAuth(true); setLE('') } else setLE('Feil brukernavn eller passord')
+    if (loginUser.toLowerCase().trim() === 'coach' && loginPass === 'Spartacus#2023') {
+      setAuth(true); setLE('')
+    } else {
+      setLE('Feil brukernavn eller passord')
+    }
   }
 
-  const miCounts = useMemo(() => {
-    const counts = { active:0, expired:0, unpaid:0, not_member:0 }
-    members.forEach(m => { const s=getMiStatus(m); counts[s]=(counts[s]||0)+1 })
-    return counts
-  }, [members])
+  const statusCounts = useMemo(() => {
+    const athletes = members.filter(m => !m.isCoach)
+    return {
+      active:      athletes.filter(m => getMiStatus(m) === 'active').length,
+      forfalt:     fakturaer.filter(f => f.betalingStatus === 'forfalt').length,
+      purret:      fakturaer.filter(f => f.betalingStatus === 'purret').length,
+      inkasso:     fakturaer.filter(f => f.betalingStatus === 'inkasso').length,
+      fritidskort: athletes.filter(m => m.fritidskort && getFritidskortstatus(m) && getFritidskortstatus(m).active).length,
+      junior:      athletes.filter(m => isJunior(m)).length,
+      senior:      athletes.filter(m => !isJunior(m) && m.birthDate).length,
+    }
+  }, [members, fakturaer])
 
   if (!auth) return (
     <Screen center>
       <SpartacusLogo size={56} showText/>
-      <div style={{ marginTop:20, width:'100%' }}>
-        <STitle>Admin-innlogging</STitle>
-        <input placeholder="Brukernavn" value={loginUser} onChange={e => setLU(e.target.value)} style={inputSt} autoComplete="username"/>
-        <input type="password" placeholder="Passord" value={loginPass} onChange={e => setLP(e.target.value)} onKeyDown={e => e.key==='Enter'&&handleLogin()} style={{ ...inputSt, marginTop:8, marginBottom:12 }} autoComplete="current-password"/>
+      <div style={{ marginTop:16, width:'100%' }}>
+        <div style={{ fontSize:18, fontWeight:900, marginBottom:10 }}>Admin-innlogging</div>
+        <input placeholder="Brukernavn" value={loginUser} onChange={e => setLU(e.target.value)} style={{ ...inputSt, marginBottom:8 }} autoComplete="username"/>
+        <input type="password" placeholder="Passord" value={loginPass} onChange={e => setLP(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleLogin()} style={{ ...inputSt, marginBottom:10 }} autoComplete="current-password"/>
         {loginErr && <div style={{ color:T.red, fontSize:13, marginBottom:10 }}>{loginErr}</div>}
         <BigBtn onClick={handleLogin}>Logg inn</BigBtn>
-        <div style={{ marginTop:10, color:T.muted, fontSize:11, textAlign:'center' }}>Demo: coach / Spartacus#2023</div>
+        <div style={{ marginTop:8, color:T.muted, fontSize:11, textAlign:'center' }}>Demo: coach / Spartacus#2023</div>
       </div>
     </Screen>
   )
 
   const tabs = [
-    { key:'overview', label:'📊 Oversikt'    },
-    { key:'members',  label:'👥 Utøvere'     },
-    { key:'late',     label:'⏱ Seint'        },
-    { key:'log',      label:'📋 Logg'        },
-    { key:'sms',      label:'📱 SMS'         },
-    { key:'betaling', label:'💳 Betaling'    },
-    { key:'faktura',  label:'🧾 Faktura'     },
-    { key:'manage',   label:'⚙️ Administrer' },
+    { key:'overview',  label:'📊 Oversikt'   },
+    { key:'members',   label:'👥 Utøvere'    },
+    { key:'register',  label:'✅ Registrer'  },
+    { key:'log',       label:'📋 Logg'       },
+    { key:'schedule',  label:'📅 Timeplan'   },
+    { key:'faktura',   label:'🧾 Faktura'    },
+    { key:'sms',       label:'📱 SMS'        },
+    { key:'manage',    label:'⚙️ Administrer'},
   ]
-  const syncColor = miStatus.status==='ok'?T.green:miStatus.status==='syncing'?T.yellow:T.muted
 
   return (
-    <div style={{ padding:'14px', maxWidth:1000, margin:'0 auto' }}>
-      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:14, flexWrap:'wrap', gap:8 }}>
-        <div style={{ display:'flex', gap:5, flexWrap:'wrap' }}>
+    <div style={{ padding:'12px', maxWidth:1100, margin:'0 auto' }}>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10, flexWrap:'wrap', gap:8 }}>
+        <div style={{ display:'flex', gap:4, flexWrap:'wrap' }}>
           {tabs.map(t => (
-            <button key={t.key} onClick={() => setTab(t.key)} style={{ padding:'8px 12px', borderRadius:9, border:`1px solid ${tab===t.key?T.accent:T.border}`, background:tab===t.key?T.accent:'transparent', color:tab===t.key?'#fff':T.muted, cursor:'pointer', fontSize:12, fontWeight:700 }}>{t.label}</button>
+            <button key={t.key} onClick={() => setTab(t.key)} style={{ padding:'7px 10px', borderRadius:9, border:'1px solid ' + (tab === t.key ? T.accent : T.border), background: tab === t.key ? T.accent : 'transparent', color: tab === t.key ? '#fff' : T.muted, cursor:'pointer', fontSize:11, fontWeight:700 }}>
+              {t.label}
+            </button>
           ))}
         </div>
-        <div style={{ display:'flex', gap:6 }}>
-          <div style={{ padding:'6px 12px', borderRadius:8, border:`1px solid ${syncColor}55`, fontSize:11, color:syncColor, display:'flex', alignItems:'center', gap:5 }}>
-            <span style={{ display:'inline-block', width:6, height:6, borderRadius:'50%', background:syncColor }}/>
-            Min Idrett · {miStatus.status==='ok'?`${miStatus.count}`:miStatus.status==='syncing'?'Synker…':'Ikke tilkoblet'}
-          </div>
-          <button onClick={() => setAuth(false)} style={{ padding:'7px 12px', borderRadius:8, border:`1px solid ${T.border}`, background:'transparent', color:T.muted, cursor:'pointer', fontSize:12 }}>Logg ut</button>
-        </div>
+        <button onClick={() => setAuth(false)} style={{ padding:'6px 12px', borderRadius:8, border:'1px solid ' + T.border, background:'transparent', color:T.muted, cursor:'pointer', fontSize:12 }}>
+          Logg ut
+        </button>
       </div>
-      <MiStatusBar counts={miCounts}/>
-      {tab==='overview' && <OverviewTab  members={members} attendance={attendance}/>}
-      {tab==='members'  && <MembersTab   members={members} attendance={attendance}/>}
-      {tab==='late'     && <LateTab      attendance={attendance}/>}
-      {tab==='log'      && <LogTab       attendance={attendance} onEdit={onEdit} onDelete={onDelete}/>}
-      {tab==='sms'      && <SmsTab       members={members} attendance={attendance}/>}
-      {tab==='betaling' && <BetalingTab  members={members}/>}
-      {tab==='faktura'  && <FakturaTab   members={members}/>}
-      {tab==='manage'   && <ManageTab    members={members} setMembers={setMembers} onSync={onSync} miStatus={miStatus}/>}
+
+      <StatusBar counts={statusCounts}/>
+
+      {tab === 'overview'  && <OverviewTab  members={members} attendance={attendance} fakturaer={fakturaer}/>}
+      {tab === 'members'   && <MembersTab   members={members} setMembers={setMembers} spesial={spesial} saveSpesial={saveSpesial}/>}
+      {tab === 'register'  && <RegisterTab  members={members} onAdd={onAdd}/>}
+      {tab === 'log'       && <LogTab       attendance={attendance} editAtt={editAtt} delAtt={delAtt}/>}
+      {tab === 'schedule'  && <ScheduleAdminTab overrides={overrides} saveOverrides={saveOverrides}/>}
+      {tab === 'faktura'   && <FakturaTab   members={members} fakturaer={fakturaer} setFakturaer={setFakturaer}/>}
+      {tab === 'sms'       && <SmsTab       members={members} attendance={attendance}/>}
+      {tab === 'manage'    && <ManageTab    members={members} setMembers={setMembers} syncMI={syncMI} miSt={miSt}/>}
     </div>
   )
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════
 // OVERVIEW
-// ═══════════════════════════════════════════════════════════════════════════════
-function OverviewTab({ members, attendance }) {
+// ═══════════════════════════════════════════════════════════
+function OverviewTab({ members, attendance, fakturaer }) {
   const [period, setPeriod] = useState(30)
   const cutoff    = daysAgo(period)
-  const periodLog = attendance.filter(a => a.date>=cutoff)
-  const todayLog  = attendance.filter(a => a.date===todayISO())
-  const weekLog   = attendance.filter(a => a.date>=daysAgo(7))
+  const periodLog = attendance.filter(a => a.date >= cutoff)
+  const todayLog  = attendance.filter(a => a.date === todayISO())
+  const weekLog   = attendance.filter(a => a.date >= daysAgo(7))
   const athletes  = members.filter(m => !m.isCoach)
-  const lateToday = todayLog.filter(a => a.isLate && a.status!=='absent')
 
   const stats = useMemo(() => athletes.map(m => {
-    const logs = periodLog.filter(a => a.memberId===m.id)
-    const att  = logs.filter(a => a.status!=='absent').length
-    return { ...m, elig:calcEligibility(att,logs.length) }
+    const logs = periodLog.filter(a => a.memberId === m.id)
+    const att  = logs.filter(a => a.status !== 'absent').length
+    return { ...m, elig: calcElig(att, logs.length) }
   }), [athletes, periodLog])
 
-  const kampklar = stats.filter(s => s.elig.label==='Kampklar').length
-  const maaVurd  = stats.filter(s => s.elig.label==='Må vurderes').length
-  const ikkeKamp = stats.filter(s => s.elig.label==='Ikke kampklar').length
-
-  const weekBars = useMemo(() => Array.from({length:8},(_,i) => ({
-    c: attendance.filter(a => a.date>=daysAgo((8-i)*7) && a.date<daysAgo((7-i)*7) && a.status!=='absent').length
+  const weekBars = useMemo(() => Array.from({ length:8 }, (_, i) => ({
+    c: attendance.filter(a => a.date >= daysAgo((8-i)*7) && a.date < daysAgo((7-i)*7) && a.status !== 'absent').length
   })), [attendance])
-  const maxBar = Math.max(...weekBars.map(w=>w.c),1)
+  const maxBar = Math.max(...weekBars.map(w => w.c), 1)
 
-  const discStats = useMemo(() => {
-    const map={}
-    periodLog.filter(a=>a.status!=='absent').forEach(a => { map[a.disc]=(map[a.disc]||0)+1 })
-    return Object.entries(map).sort((a,b) => b[1]-a[1])
-  }, [periodLog])
-  const maxDisc = Math.max(...discStats.map(d=>d[1]),1)
+  const fkCounts = useMemo(() => {
+    return {
+      ikkeForfalt: fakturaer.filter(f => f.betalingStatus === 'ikke_forfalt').length,
+      forfalt:     fakturaer.filter(f => f.betalingStatus === 'forfalt').length,
+      purret:      fakturaer.filter(f => f.betalingStatus === 'purret').length,
+      inkasso:     fakturaer.filter(f => f.betalingStatus === 'inkasso').length,
+    }
+  }, [fakturaer])
 
   return (
     <div>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14 }}>
-        <div style={{ fontWeight:900, fontSize:16 }}>Kampklarhet & statistikk</div>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
+        <div style={{ fontWeight:900, fontSize:16 }}>Oversikt</div>
         <select value={period} onChange={e => setPeriod(+e.target.value)} style={selSt}>
-          <option value={7}>7 dager</option><option value={30}>30 dager</option>
-          <option value={60}>60 dager</option><option value={90}>90 dager</option>
+          <option value={7}>7d</option><option value={30}>30d</option><option value={60}>60d</option><option value={90}>90d</option>
         </select>
       </div>
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(130px,1fr))', gap:10, marginBottom:14 }}>
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(110px,1fr))', gap:8, marginBottom:14 }}>
         {[
-          {n:todayLog.length, l:'Innsjekk i dag', c:T.accent},
-          {n:lateToday.length,l:'Sent i dag ⏱',  c:T.orange},
-          {n:weekLog.length,  l:'Oppmøte uka',   c:T.blue  },
-          {n:kampklar,        l:'Kampklare 🟢',  c:T.green },
-          {n:maaVurd,         l:'Vurderes 🟡',   c:T.yellow},
-          {n:ikkeKamp,        l:'Ikke klar 🔴',  c:T.red   },
-        ].map(({n,l,c}) => (
-          <div key={l} style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:12, padding:'14px 10px', textAlign:'center' }}>
-            <div style={{ fontSize:28, fontWeight:900, color:c, lineHeight:1 }}>{n}</div>
-            <div style={{ fontSize:10, color:T.muted, marginTop:5, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.06em', lineHeight:1.3 }}>{l}</div>
+          { n: todayLog.length,                                          l:'Innsjekk i dag',  c:T.accent  },
+          { n: weekLog.length,                                           l:'Uka totalt',       c:T.blue    },
+          { n: stats.filter(s => s.elig.label === 'Kampklar').length,   l:'Kampklare 🟢',    c:T.green   },
+          { n: athletes.filter(m => isJunior(m)).length,                l:'Junior 🧒',        c:T.blue    },
+          { n: fkCounts.forfalt + fkCounts.purret,                       l:'Forfalt/purret',  c:T.yellow  },
+          { n: fkCounts.inkasso,                                         l:'Inkasso ⛔',       c:T.red     },
+        ].map(({ n, l, c }) => (
+          <div key={l} style={{ background:T.card, border:'1px solid ' + T.border, borderRadius:12, padding:'12px 8px', textAlign:'center' }}>
+            <div style={{ fontSize:24, fontWeight:900, color:c, lineHeight:1 }}>{n}</div>
+            <div style={{ fontSize:9, color:T.muted, marginTop:4, fontWeight:700, textTransform:'uppercase', lineHeight:1.3 }}>{l}</div>
           </div>
         ))}
       </div>
-      <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:14, padding:18, marginBottom:14 }}>
-        <div style={{ fontSize:11, fontWeight:800, color:T.muted, textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:14 }}>Oppmøte uke for uke</div>
-        <div style={{ display:'flex', alignItems:'flex-end', gap:5, height:80 }}>
-          {weekBars.map((w,i) => (
+      <div style={{ background:T.card, border:'1px solid ' + T.border, borderRadius:14, padding:16 }}>
+        <div style={{ fontSize:11, fontWeight:800, color:T.muted, textTransform:'uppercase', marginBottom:12 }}>Oppmøte uke for uke</div>
+        <div style={{ display:'flex', alignItems:'flex-end', gap:5, height:70 }}>
+          {weekBars.map((w, i) => (
             <div key={i} style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', gap:3 }}>
-              <div style={{ width:'100%', background:`${T.accent}cc`, borderRadius:'4px 4px 0 0', height:`${(w.c/maxBar)*64}px`, minHeight:3 }}/>
+              <div style={{ width:'100%', background: T.accent + 'cc', borderRadius:'4px 4px 0 0', height: (w.c/maxBar)*56 + 'px', minHeight:3 }}/>
               <span style={{ fontSize:9, color:T.muted }}>U{i+1}</span>
             </div>
           ))}
         </div>
       </div>
-      <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:14, padding:18 }}>
-        <div style={{ fontSize:11, fontWeight:800, color:T.muted, textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:14 }}>Popularitet per gren</div>
-        {discStats.map(([disc,count]) => (
-          <div key={disc} style={{ marginBottom:10 }}>
-            <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4 }}>
-              <span style={{ fontWeight:700, fontSize:13 }}>{disc}</span><span style={{ fontSize:11, color:T.muted }}>{count}</span>
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════
+// MEMBERS TAB
+// ═══════════════════════════════════════════════════════════
+function MembersTab({ members, setMembers, spesial, saveSpesial }) {
+  const [search, setSrch]     = useState('')
+  const [filter, setFilter]   = useState('alle')
+  const [editingFk, setEditFk]= useState(null)
+  const [fkDate, setFkDate]   = useState(todayISO())
+  const [detail, setDetail]   = useState(null)
+
+  const athletes = members.filter(m => !m.isCoach)
+  const filtered = useMemo(() => {
+    let r = athletes
+    if (search.trim()) r = r.filter(m => m.name.toLowerCase().includes(search.toLowerCase()))
+    if (filter === 'junior')       r = r.filter(m => isJunior(m))
+    if (filter === 'senior')       r = r.filter(m => !isJunior(m) && m.birthDate)
+    if (filter === 'fritidskort')  r = r.filter(m => m.fritidskort && getFritidskortstatus(m) && getFritidskortstatus(m).active)
+    if (filter === 'spesialavtale')r = r.filter(m => spesial[m.id])
+    if (filter === 'inkasso')      r = r.filter(m => getMiStatus(m) === 'inkasso')
+    return r
+  }, [athletes, search, filter, spesial])
+
+  function saveFk(member) {
+    const updated = members.map(m => m.id === member.id ? { ...m, fritidskort: { startDate: fkDate, value: FRITIDSKORT_VALUE } } : m)
+    setMembers(updated)
+    lsSet(LS_MEMBERS, updated)
+    setEditFk(null)
+  }
+
+  function removeFk(member) {
+    const updated = members.map(m => m.id === member.id ? { ...m, fritidskort: null } : m)
+    setMembers(updated)
+    lsSet(LS_MEMBERS, updated)
+    setEditFk(null)
+  }
+
+  function toggleSpesial(id) {
+    const updated = { ...spesial }
+    if (updated[id]) delete updated[id]
+    else updated[id] = { note:'Spesialavtale', since: todayISO() }
+    saveSpesial(updated)
+  }
+
+  return (
+    <div>
+      <div style={{ display:'flex', gap:6, flexWrap:'wrap', marginBottom:10 }}>
+        <input placeholder="🔍 Søk…" value={search} onChange={e => setSrch(e.target.value)} style={{ flex:1, minWidth:120, padding:'8px 12px', borderRadius:9, border:'1px solid ' + T.border, background:T.surface, color:T.text, fontSize:13, outline:'none' }}/>
+      </div>
+
+      <div style={{ background:T.card, border:'1px solid ' + T.border, borderRadius:12, padding:'10px 14px', marginBottom:12 }}>
+        <div style={{ fontSize:11, fontWeight:800, color:T.muted, textTransform:'uppercase', marginBottom:8 }}>Filter</div>
+        <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
+          {[{k:'alle',l:'Alle'},{k:'junior',l:'🧒 Junior'},{k:'senior',l:'👤 Senior'},{k:'fritidskort',l:'🎫 Fritidskort'},{k:'spesialavtale',l:'⭐ Spesialavtale'},{k:'inkasso',l:'⛔ Inkasso'}].map(b => (
+            <button key={b.k} onClick={() => setFilter(b.k)} style={{ padding:'6px 12px', borderRadius:99, border:'1px solid ' + (filter === b.k ? T.accent : T.border), background: filter === b.k ? T.accent : 'transparent', color: filter === b.k ? '#fff' : T.muted, cursor:'pointer', fontSize:12, fontWeight:700 }}>
+              {b.l}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ background:T.card, border:'1px solid ' + T.border, borderRadius:14, overflow:'hidden' }}>
+        {filtered.length === 0 && <div style={{ padding:24, color:T.muted, textAlign:'center' }}>Ingen funnet</div>}
+        {filtered.map((m, i) => {
+          const junior = isJunior(m)
+          const fk     = getFritidskortstatus(m)
+          const sa     = spesial[m.id]
+          const miSt   = getMiStatus(m)
+          const stColor= { active:T.green, expired:T.yellow, inkasso:T.red, unpaid:T.yellow, not_member:T.muted }[miSt] || T.muted
+          const stLabel= { active:'Aktiv', expired:'Utløpt', inkasso:'Inkasso', unpaid:'Ubetalt', not_member:'Ikke medlem' }[miSt] || '–'
+          return (
+            <div key={m.id} style={{ padding:'11px 14px', borderBottom: i < filtered.length-1 ? '1px solid ' + T.border : 'none', display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
+              <Avatar name={m.name} size={30}/>
+              <div style={{ flex:1, minWidth:100 }}>
+                <div style={{ fontWeight:700, fontSize:13, display:'flex', gap:5, flexWrap:'wrap', alignItems:'center' }}>
+                  {m.name}
+                  {junior && <Tag c={T.blue}>Junior{m.birthDate ? ' (' + getAge(m.birthDate) + 'år)' : ''}</Tag>}
+                  {!junior && m.birthDate && <Tag c={T.gold}>Senior</Tag>}
+                  {fk && fk.active && <Tag c={T.purple}>🎫 FK</Tag>}
+                  {sa && <Tag c={T.orange}>⭐</Tag>}
+                </div>
+                <div style={{ fontSize:11, color:T.muted }}>{m.phone || '–'} · {m.disc}</div>
+              </div>
+              <Tag c={stColor}>{stLabel}</Tag>
+              <div style={{ display:'flex', gap:5 }}>
+                <button onClick={() => setDetail(m)} style={{ padding:'5px 8px', borderRadius:7, border:'1px solid ' + T.blue + '44', background: T.blue + '15', color:T.blue, cursor:'pointer', fontSize:11, fontWeight:800 }}>👁</button>
+                <button onClick={() => { setEditFk(m); setFkDate(m.fritidskort ? m.fritidskort.startDate : todayISO()) }} style={{ padding:'5px 8px', borderRadius:7, border:'1px solid ' + T.purple + '44', background: T.purple + '15', color:T.purple, cursor:'pointer', fontSize:11, fontWeight:800 }}>🎫</button>
+                <button onClick={() => toggleSpesial(m.id)} style={{ padding:'5px 8px', borderRadius:7, border:'1px solid ' + T.orange + '44', background: sa ? T.orange + '25' : T.orange + '10', color:T.orange, cursor:'pointer', fontSize:11, fontWeight:800 }}>{sa ? '⭐' : '☆'}</button>
+              </div>
             </div>
-            <div style={{ background:T.surface, borderRadius:5, height:7, overflow:'hidden' }}>
-              <div style={{ width:`${(count/maxDisc)*100}%`, height:'100%', background:T.accent, borderRadius:5 }}/>
+          )
+        })}
+      </div>
+
+      {editingFk && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.88)', zIndex:500, display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
+          <div style={{ background:T.card, border:'1px solid ' + T.border, borderRadius:20, padding:24, maxWidth:380, width:'100%' }}>
+            <div style={{ fontWeight:900, fontSize:16, marginBottom:4 }}>🎫 Fritidskort</div>
+            <div style={{ color:T.muted, fontSize:13, marginBottom:14 }}>{editingFk.name}</div>
+            {editingFk.fritidskort && (() => {
+              const fk = getFritidskortstatus(editingFk)
+              return (
+                <div style={{ padding:'10px 14px', borderRadius:9, background: fk && fk.active ? T.green + '15' : T.yellow + '15', border:'1px solid ' + (fk && fk.active ? T.green : T.yellow) + '44', color: fk && fk.active ? T.green : T.yellow, fontSize:12, marginBottom:14 }}>
+                  {fk && fk.active ? '✅ Aktivt til ' + fk.endDate + ' (' + fk.daysLeft + ' dager)' : '⚠️ Utløpt'}
+                </div>
+              )
+            })()}
+            <div style={{ fontSize:11, color:T.muted, fontWeight:700, textTransform:'uppercase', marginBottom:6 }}>Startdato</div>
+            <input type="date" value={fkDate} onChange={e => setFkDate(e.target.value)} style={{ ...inputSt, marginBottom:10 }}/>
+            <div style={{ fontSize:11, color:T.muted, marginBottom:14 }}>
+              Verdi: <strong style={{ color:T.purple }}>{FRITIDSKORT_VALUE} kr</strong> · Gjelder {FRITIDSKORT_MONTHS} mnd
+            </div>
+            <div style={{ display:'flex', gap:8 }}>
+              <button onClick={() => saveFk(editingFk)} style={{ flex:1, padding:'12px', borderRadius:10, border:'none', background:T.purple, color:'#fff', fontWeight:900, cursor:'pointer', fontSize:14 }}>💾 Aktiver</button>
+              {editingFk.fritidskort && <button onClick={() => removeFk(editingFk)} style={{ padding:'12px', borderRadius:10, border:'1px solid ' + T.red + '44', background: T.red + '15', color:T.red, cursor:'pointer', fontSize:13, fontWeight:800 }}>Fjern</button>}
+              <button onClick={() => setEditFk(null)} style={{ padding:'12px 16px', borderRadius:10, border:'1px solid ' + T.border, background:'transparent', color:T.muted, cursor:'pointer' }}>Avbryt</button>
             </div>
           </div>
-        ))}
-      </div>
+        </div>
+      )}
+
+      {detail && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.88)', zIndex:500, display:'flex', alignItems:'center', justifyContent:'center', padding:20 }} onClick={e => e.target === e.currentTarget && setDetail(null)}>
+          <div style={{ background:T.card, border:'1px solid ' + T.border, borderRadius:20, padding:24, maxWidth:420, width:'100%', maxHeight:'90vh', overflowY:'auto' }}>
+            <div style={{ display:'flex', justifyContent:'space-between', marginBottom:14 }}>
+              <div style={{ display:'flex', gap:10, alignItems:'center' }}>
+                <Avatar name={detail.name} size={44}/>
+                <div>
+                  <div style={{ fontWeight:900, fontSize:16 }}>{detail.name}</div>
+                  <div style={{ fontSize:12, color:T.muted }}>{isJunior(detail) ? 'Junior' : 'Senior'}{detail.birthDate ? ' · ' + getAge(detail.birthDate) + ' år' : ''}</div>
+                </div>
+              </div>
+              <button onClick={() => setDetail(null)} style={{ background:'none', border:'none', color:T.muted, cursor:'pointer', fontSize:20 }}>×</button>
+            </div>
+            <div style={{ background:T.surface, border:'1px solid ' + T.border, borderRadius:12, padding:14, marginBottom:12 }}>
+              <div style={{ fontWeight:800, fontSize:12, color:T.accent, marginBottom:8 }}>🔒 Privat — kun admin</div>
+              {[
+                ['E-post',      detail.email     || '–'],
+                ['Telefon',     detail.phone     || '–'],
+                ['Adresse',     detail.address   || '–'],
+                ['Fødselsdato', detail.birthDate || '–'],
+                ['Kjønn',       detail.gender    || '–'],
+                ['Avgift',      isJunior(detail) ? 'Junior – ' + JUNIOR_AVGIFT + ' kr/mnd' : 'Senior – ' + SENIOR_AVGIFT + ' kr/mnd'],
+              ].map(([l, v]) => (
+                <div key={l} style={{ display:'flex', justifyContent:'space-between', padding:'4px 0', borderBottom:'1px solid ' + T.border, fontSize:12 }}>
+                  <span style={{ color:T.muted }}>{l}</span>
+                  <span>{v}</span>
+                </div>
+              ))}
+            </div>
+            <button onClick={() => setDetail(null)} style={{ width:'100%', padding:'11px', borderRadius:10, border:'1px solid ' + T.border, background:'transparent', color:T.muted, cursor:'pointer', fontWeight:800 }}>Lukk</button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// MEMBERS
-// ═══════════════════════════════════════════════════════════════════════════════
-function MembersTab({ members, attendance }) {
-  const [period, setPeriod] = useState(30)
-  const [disc, setDisc]     = useState('Alle')
-  const [search, setSrch]   = useState('')
-  const [sortKey, setSK]    = useState('name')
-  const [sortDir, setSD]    = useState(1)
-  const athletes = members.filter(m => !m.isCoach)
+// ═══════════════════════════════════════════════════════════
+// REGISTER TAB
+// ═══════════════════════════════════════════════════════════
+function RegisterTab({ members, onAdd }) {
+  const [selDate, setSD]   = useState(todayISO())
+  const [selSess, setSess] = useState('')
+  const [selMs, setSelMs]  = useState([])
+  const [bulkSt, setBulk]  = useState('attended')
+  const [search, setSQ]    = useState('')
+  const [saved, setSaved]  = useState(false)
 
-  const stats = useMemo(() => athletes.map(m => {
-    const all  = attendance.filter(a => a.memberId===m.id)
-    const p    = all.filter(a => a.date>=daysAgo(period))
-    const p90  = all.filter(a => a.date>=daysAgo(90))
-    const att  = p.filter(a => a.status!=='absent').length
-    const lateCount = p.filter(a => a.isLate&&a.status!=='absent').length
-    return { ...m, e30:calcEligibility(att,p.length), e90:calcEligibility(p90.filter(a=>a.status!=='absent').length,p90.length), lateCount, miSt:getMiStatus(m) }
-  }), [athletes, attendance, period])
+  const dayName  = DAYS_NO[new Date(selDate).getDay() === 0 ? 6 : new Date(selDate).getDay()-1]
+  const sessions = SCHEDULE[dayName] || []
+  const athletes = members.filter(m => !m.isCoach).filter(m => !search.trim() || m.name.toLowerCase().includes(search.toLowerCase()))
 
-  const filtered = useMemo(() => {
-    let r = stats
-    if (disc!=='Alle') r=r.filter(s => s.disc===disc)
-    if (search.trim()) r=r.filter(s => s.name.toLowerCase().includes(search.toLowerCase()))
-    return [...r].sort((a,b) => {
-      if (sortKey==='name')  return a.name.localeCompare(b.name)*sortDir
-      if (sortKey==='pct30') return ((a.e30.pct||0)-(b.e30.pct||0))*sortDir
-      if (sortKey==='pct90') return ((a.e90.pct||0)-(b.e90.pct||0))*sortDir
-      if (sortKey==='late')  return (a.lateCount-b.lateCount)*sortDir
-      return 0
+  function toggle(id) {
+    setSelMs(p => p.includes(id) ? p.filter(x => x !== id) : [...p, id])
+  }
+
+  function registerAll() {
+    const sess = sessions.find(s => s.name === selSess)
+    if (!sess || selMs.length === 0) return
+    selMs.forEach(id => {
+      const m = members.find(x => x.id === id)
+      if (!m) return
+      onAdd({
+        memberId: m.id, memberName: m.name,
+        date: selDate, day: dayName,
+        session: sess.name, disc: sess.disc,
+        status: bulkSt, isLate: false, lateMinutes: 0,
+        injuryNote: null, registeredAt: sess.start,
+        miStatus: getMiStatus(m), isGuest: false,
+        isCoach: m.isCoach, registeredByAdmin: true,
+      })
     })
-  }, [stats, disc, search, sortKey, sortDir])
-
-  function toggleSort(k) { if(sortKey===k) setSD(d=>d*-1); else { setSK(k); setSD(-1) } }
-  const SH = ({k,label}) => <th onClick={() => toggleSort(k)} style={{ padding:'10px 12px', textAlign:'left', color:sortKey===k?T.accent:T.muted, fontWeight:800, fontSize:10, textTransform:'uppercase', letterSpacing:'0.07em', borderBottom:`1px solid ${T.border}`, cursor:'pointer', whiteSpace:'nowrap' }}>{label}{sortKey===k?(sortDir===-1?' ▼':' ▲'):''}</th>
+    setSelMs([]); setSaved(true); setTimeout(() => setSaved(false), 2500)
+  }
 
   return (
     <div>
-      <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:14 }}>
-        <input placeholder="🔍 Søk…" value={search} onChange={e => setSrch(e.target.value)} style={{ flex:1, minWidth:120, padding:'8px 12px', borderRadius:9, border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:13, outline:'none' }}/>
-        <select value={disc} onChange={e => setDisc(e.target.value)} style={selSt}>{DISCIPLINES.map(d => <option key={d}>{d}</option>)}</select>
-        <select value={period} onChange={e => setPeriod(+e.target.value)} style={selSt}>
-          <option value={7}>7d</option><option value={30}>30d</option><option value={60}>60d</option><option value={90}>90d</option>
-        </select>
-      </div>
-      <div style={{ overflowX:'auto', borderRadius:14, border:`1px solid ${T.border}` }}>
-        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
-          <thead style={{ background:T.card }}>
-            <tr>
-              <SH k="name"  label="Navn"/>
-              <th style={{ padding:'10px 12px', textAlign:'left', color:T.muted, fontWeight:800, fontSize:10, textTransform:'uppercase', borderBottom:`1px solid ${T.border}`, whiteSpace:'nowrap' }}>Min Idrett</th>
-              <th style={{ padding:'10px 12px', textAlign:'left', color:T.muted, fontWeight:800, fontSize:10, textTransform:'uppercase', borderBottom:`1px solid ${T.border}`, whiteSpace:'nowrap' }}>Gren</th>
-              <SH k="pct30" label={`${period}d %`}/>
-              <SH k="pct90" label="90d %"/>
-              <SH k="late"  label="Sent"/>
-              <th style={{ padding:'10px 12px', textAlign:'left', color:T.muted, fontWeight:800, fontSize:10, textTransform:'uppercase', borderBottom:`1px solid ${T.border}`, whiteSpace:'nowrap' }}>Kampstatus</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((m,i) => {
-              const d = MI_STATUS_DISPLAY[m.miSt]
-              return (
-                <tr key={m.id} style={{ background:i%2===0?T.card:T.surface }}>
-                  <td style={{ padding:'11px 12px', fontWeight:700, borderBottom:`1px solid ${T.border}` }}><div style={{ display:'flex', alignItems:'center', gap:8 }}><Avatar name={m.name} size={28}/>{m.name}</div></td>
-                  <td style={{ padding:'11px 12px', borderBottom:`1px solid ${T.border}` }}><Tag c={d.color}>{d.label}</Tag></td>
-                  <td style={{ padding:'11px 12px', borderBottom:`1px solid ${T.border}` }}><Tag c={T.blue}>{m.disc}</Tag></td>
-                  <td style={{ padding:'11px 12px', borderBottom:`1px solid ${T.border}` }}><PctBar pct={m.e30.pct||0} color={m.e30.color}/></td>
-                  <td style={{ padding:'11px 12px', borderBottom:`1px solid ${T.border}` }}><PctBar pct={m.e90.pct||0} color={m.e90.color}/></td>
-                  <td style={{ padding:'11px 12px', borderBottom:`1px solid ${T.border}` }}><span style={{ color:m.lateCount>0?T.orange:T.muted, fontWeight:800, fontSize:13 }}>{m.lateCount>0?`⏱ ${m.lateCount}x`:'–'}</span></td>
-                  <td style={{ padding:'11px 12px', borderBottom:`1px solid ${T.border}` }}><span style={{ padding:'4px 10px', borderRadius:99, background:m.e30.bg, color:m.e30.color, fontSize:10, fontWeight:800, whiteSpace:'nowrap' }}>{m.e30.label} ({m.e30.pct}%)</span></td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  )
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// LATE TAB
-// ═══════════════════════════════════════════════════════════════════════════════
-function LateTab({ attendance }) {
-  const [period, setPeriod] = useState(30)
-  const [search, setSrch]   = useState('')
-  const cutoff = daysAgo(period)
-
-  const lateRecords = useMemo(() =>
-    attendance.filter(a => a.isLate&&a.status!=='absent'&&a.date>=cutoff)
-              .sort((a,b) => b.date.localeCompare(a.date)||b.createdAt.localeCompare(a.createdAt))
-  , [attendance, cutoff])
-
-  const filtered = useMemo(() => {
-    if (!search.trim()) return lateRecords
-    const q = search.toLowerCase()
-    return lateRecords.filter(a => a.memberName.toLowerCase().includes(q)||a.session.toLowerCase().includes(q))
-  }, [lateRecords, search])
-
-  const byPerson = useMemo(() => {
-    const map={}
-    lateRecords.forEach(a => { if(!map[a.memberName]) map[a.memberName]={name:a.memberName,count:0,totalMins:0}; map[a.memberName].count++; map[a.memberName].totalMins+=a.lateMinutes||0 })
-    return Object.values(map).sort((a,b) => b.count-a.count)
-  }, [lateRecords])
-
-  return (
-    <div>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14, flexWrap:'wrap', gap:8 }}>
-        <div style={{ fontWeight:900, fontSize:16 }}>⏱ Seint oppmøte</div>
-        <div style={{ display:'flex', gap:8 }}>
-          <input placeholder="🔍 Søk…" value={search} onChange={e => setSrch(e.target.value)} style={{ padding:'8px 12px', borderRadius:9, border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:13, outline:'none', width:160 }}/>
-          <select value={period} onChange={e => setPeriod(+e.target.value)} style={selSt}>
-            <option value={7}>7d</option><option value={30}>30d</option><option value={60}>60d</option><option value={90}>90d</option>
+      <div style={{ fontWeight:900, fontSize:16, marginBottom:12 }}>✅ Manuell registrering</div>
+      {saved && <div style={{ padding:'9px 14px', borderRadius:9, background: T.green + '15', border:'1px solid ' + T.green + '44', color:T.green, fontWeight:800, marginBottom:10 }}>✅ Registrert!</div>}
+      <div style={{ background:T.card, border:'1px solid ' + T.border, borderRadius:14, padding:14, marginBottom:10 }}>
+        <div style={{ fontWeight:800, fontSize:13, marginBottom:8 }}>1️⃣ Dato og time</div>
+        <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+          <input type="date" value={selDate} onChange={e => setSD(e.target.value)} style={{ flex:1, ...inputSt }}/>
+          <select value={selSess} onChange={e => setSess(e.target.value)} style={{ flex:2, ...selSt, fontSize:13, padding:'11px 14px' }}>
+            <option value="">– Velg time –</option>
+            {sessions.map(s => <option key={s.name} value={s.name}>{s.icon} {s.name} ({s.start})</option>)}
           </select>
         </div>
       </div>
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(140px,1fr))', gap:10, marginBottom:16 }}>
-        {[{n:lateRecords.length,l:'Seint totalt',c:T.orange},{n:byPerson.length,l:'Unike utøvere',c:T.yellow}].map(({n,l,c}) => (
-          <div key={l} style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:12, padding:'14px 10px', textAlign:'center' }}>
-            <div style={{ fontSize:28, fontWeight:900, color:c, lineHeight:1 }}>{n}</div>
-            <div style={{ fontSize:10, color:T.muted, marginTop:5, fontWeight:700, textTransform:'uppercase' }}>{l}</div>
-          </div>
-        ))}
-        {byPerson[0] && (
-          <div style={{ background:T.card, border:`1px solid ${T.orange}55`, borderRadius:12, padding:'14px 10px', textAlign:'center' }}>
-            <div style={{ fontSize:15, fontWeight:900, color:T.orange, lineHeight:1.2 }}>{byPerson[0].name.split(' ')[0]}</div>
-            <div style={{ fontSize:10, color:T.muted, marginTop:5, fontWeight:700, textTransform:'uppercase' }}>Flest sene ({byPerson[0].count}x)</div>
-          </div>
-        )}
-      </div>
-      {byPerson.length>0 && (
-        <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:14, padding:16, marginBottom:16 }}>
-          <div style={{ fontSize:11, fontWeight:800, color:T.muted, textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:12 }}>Oversikt per utøver</div>
-          {byPerson.map(p => (
-            <div key={p.name} style={{ display:'flex', alignItems:'center', gap:10, padding:'8px 0', borderBottom:`1px solid ${T.border}` }}>
-              <Avatar name={p.name} size={28}/><span style={{ flex:1, fontWeight:700, fontSize:13 }}>{p.name}</span>
-              <span style={{ color:T.orange, fontWeight:800, fontSize:13 }}>⏱ {p.count}x</span>
-              <span style={{ color:T.muted, fontSize:11 }}>snitt {p.count>0?Math.round(p.totalMins/p.count):0} min</span>
-            </div>
+      <div style={{ background:T.card, border:'1px solid ' + T.border, borderRadius:14, padding:14, marginBottom:10 }}>
+        <div style={{ fontWeight:800, fontSize:13, marginBottom:8 }}>2️⃣ Status</div>
+        <div style={{ display:'flex', gap:6 }}>
+          {[{key:'attended',icon:'✅',label:'Deltar',c:T.green},{key:'strength',icon:'💪',label:'Styrke',c:T.yellow},{key:'absent',icon:'❌',label:'Fravær',c:T.red}].map(o => (
+            <button key={o.key} onClick={() => setBulk(o.key)} style={{ flex:1, padding:'10px', borderRadius:9, border:'2px solid ' + (bulkSt === o.key ? o.c : T.border), background: bulkSt === o.key ? o.c + '18' : T.surface, color: o.c, cursor:'pointer', fontWeight:800, fontSize:12 }}>
+              {o.icon} {o.label}
+            </button>
           ))}
         </div>
-      )}
-      <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:14, overflow:'hidden' }}>
-        {filtered.length===0 && <div style={{ padding:24, color:T.muted, textAlign:'center' }}>Ingen seint oppmøte i perioden</div>}
-        {filtered.map((a,i) => (
-          <div key={a.id} style={{ padding:'11px 14px', borderBottom:i<filtered.length-1?`1px solid ${T.border}`:'none', display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
-            <Avatar name={a.memberName} size={28}/>
-            <div style={{ flex:1, minWidth:100 }}><div style={{ fontWeight:700, fontSize:13 }}>{a.memberName}</div><div style={{ fontSize:11, color:T.muted }}>{a.session} · {a.date} · {a.registeredAt}</div></div>
-            <Tag c={T.orange}>{a.lateMinutes||'?'}min sent</Tag>
-            {a.status==='strength' && <Tag c={T.yellow}>Styrke</Tag>}
+      </div>
+      <div style={{ background:T.card, border:'1px solid ' + T.border, borderRadius:14, padding:14, marginBottom:12 }}>
+        <div style={{ fontWeight:800, fontSize:13, marginBottom:8 }}>3️⃣ Velg utøvere</div>
+        <input placeholder="🔍 Søk…" value={search} onChange={e => setSQ(e.target.value)} style={{ ...inputSt, marginBottom:8 }}/>
+        <div style={{ display:'flex', justifyContent:'space-between', marginBottom:6 }}>
+          <button onClick={() => setSelMs(members.filter(m => !m.isCoach).map(m => m.id))} style={{ background:'none', border:'none', color:T.accent, cursor:'pointer', fontSize:12, fontWeight:800 }}>Velg alle</button>
+          <button onClick={() => setSelMs([])} style={{ background:'none', border:'none', color:T.muted, cursor:'pointer', fontSize:12 }}>Fjern</button>
+        </div>
+        <div style={{ maxHeight:220, overflowY:'auto', display:'flex', flexDirection:'column', gap:4 }}>
+          {athletes.map(m => {
+            const sel = selMs.includes(m.id)
+            return (
+              <button key={m.id} onClick={() => toggle(m.id)} style={{ padding:'9px 11px', borderRadius:9, border:'2px solid ' + (sel ? T.green : T.border), background: sel ? T.green + '15' : T.surface, color:T.text, cursor:'pointer', display:'flex', alignItems:'center', gap:8, textAlign:'left' }}>
+                <div style={{ width:16, height:16, borderRadius:4, border:'2px solid ' + (sel ? T.green : T.dim), background: sel ? T.green : 'transparent', flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center' }}>
+                  {sel && <span style={{ color:'#fff', fontSize:11, fontWeight:900 }}>✓</span>}
+                </div>
+                <Avatar name={m.name} size={24}/>
+                <span style={{ flex:1, fontWeight:700, fontSize:13 }}>{m.name}</span>
+                {isJunior(m) && <Tag c={T.blue}>Junior</Tag>}
+              </button>
+            )
+          })}
+        </div>
+      </div>
+      <BigBtn onClick={registerAll} disabled={!selSess || selMs.length === 0}>
+        ✅ Registrer {selMs.length} utøver{selMs.length !== 1 ? 'e' : ''}
+      </BigBtn>
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════
+// LOG TAB
+// ═══════════════════════════════════════════════════════════
+function LogTab({ attendance, editAtt, delAtt }) {
+  const [editing, setEditing]  = useState(null)
+  const [eStatus, setES]       = useState('attended')
+  const [eNote, setEN]         = useState('')
+  const [confirmDel, setConf]  = useState(null)
+  const [fDate, setFD]         = useState(todayISO())
+  const [search, setSrch]      = useState('')
+
+  const filtered = useMemo(() => {
+    let r = attendance
+    if (fDate)         r = r.filter(a => a.date === fDate)
+    if (search.trim()) r = r.filter(a => a.memberName.toLowerCase().includes(search.toLowerCase()))
+    return [...r].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 100)
+  }, [attendance, fDate, search])
+
+  const sColor = s => s === 'attended' ? T.green : s === 'strength' ? T.yellow : T.red
+  const sLabel = s => s === 'attended' ? 'Deltar' : s === 'strength' ? 'Styrke' : 'Fravær'
+
+  return (
+    <div>
+      <div style={{ display:'flex', gap:6, flexWrap:'wrap', marginBottom:10 }}>
+        <input type="date" value={fDate} onChange={e => setFD(e.target.value)} style={{ padding:'7px 10px', borderRadius:9, border:'1px solid ' + T.border, background:T.surface, color:T.text, fontSize:12, outline:'none' }}/>
+        <input placeholder="🔍 Navn…" value={search} onChange={e => setSrch(e.target.value)} style={{ flex:1, minWidth:100, padding:'7px 10px', borderRadius:9, border:'1px solid ' + T.border, background:T.surface, color:T.text, fontSize:12, outline:'none' }}/>
+        <button onClick={() => setFD('')} style={{ padding:'7px 11px', borderRadius:9, border:'1px solid ' + T.border, background:'transparent', color:T.muted, cursor:'pointer', fontSize:11 }}>Vis alle</button>
+      </div>
+      <div style={{ background:T.card, border:'1px solid ' + T.border, borderRadius:14, overflow:'hidden' }}>
+        {filtered.length === 0 && <div style={{ padding:24, color:T.muted, textAlign:'center' }}>Ingen registreringer</div>}
+        {filtered.map(a => (
+          <div key={a.id}>
+            <div style={{ padding:'10px 13px', borderBottom:'1px solid ' + T.border, display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
+              <Avatar name={a.memberName} size={28}/>
+              <div style={{ flex:1, minWidth:80 }}>
+                <div style={{ fontWeight:700, fontSize:13 }}>
+                  {a.memberName}
+                  {a.isLate && <span style={{ marginLeft:6 }}><Tag c={T.orange}>⏱</Tag></span>}
+                  {a.registeredByAdmin && <span style={{ marginLeft:4 }}><Tag c={T.blue}>Admin</Tag></span>}
+                </div>
+                <div style={{ fontSize:10, color:T.muted }}>{a.session} · {a.date} {a.registeredAt}</div>
+              </div>
+              <Tag c={sColor(a.status)}>{sLabel(a.status)}</Tag>
+              <div style={{ display:'flex', gap:4 }}>
+                <button onClick={() => { setEditing(a.id); setES(a.status); setEN(a.injuryNote || ''); setConf(null) }} style={{ padding:'4px 8px', borderRadius:7, border:'1px solid ' + T.border, background:'transparent', color:T.muted, cursor:'pointer', fontSize:11 }}>✏️</button>
+                <button onClick={() => { setConf(a.id); setEditing(null) }} style={{ padding:'4px 8px', borderRadius:7, border:'1px solid ' + T.border, background:'transparent', color:T.red, cursor:'pointer', fontSize:11 }}>🗑</button>
+              </div>
+            </div>
+            {editing === a.id && (
+              <div style={{ padding:'10px 13px', background: T.accent + '10', borderBottom:'1px solid ' + T.border, display:'flex', gap:6, flexWrap:'wrap', alignItems:'center' }}>
+                <select value={eStatus} onChange={e => setES(e.target.value)} style={{ padding:'6px 8px', borderRadius:8, border:'1px solid ' + T.border, background:T.surface, color:T.text, fontSize:12, outline:'none' }}>
+                  <option value="attended">Deltar</option>
+                  <option value="strength">Styrke</option>
+                  <option value="absent">Fravær</option>
+                </select>
+                <input value={eNote} onChange={e => setEN(e.target.value)} placeholder="Kommentar…" style={{ flex:1, padding:'6px 8px', borderRadius:8, border:'1px solid ' + T.border, background:T.surface, color:T.text, fontSize:12, outline:'none' }}/>
+                <button onClick={() => { editAtt(a.id, { status: eStatus, injuryNote: eNote || null }); setEditing(null) }} style={{ padding:'6px 11px', borderRadius:8, border:'none', background:T.green, color:'#fff', fontWeight:800, cursor:'pointer', fontSize:12 }}>Lagre</button>
+                <button onClick={() => setEditing(null)} style={{ padding:'6px 11px', borderRadius:8, border:'1px solid ' + T.border, background:'transparent', color:T.muted, cursor:'pointer', fontSize:12 }}>Avbryt</button>
+              </div>
+            )}
+            {confirmDel === a.id && (
+              <div style={{ padding:'9px 13px', background: T.red + '18', borderBottom:'1px solid ' + T.border, display:'flex', gap:6, alignItems:'center' }}>
+                <span style={{ flex:1, fontSize:12, color:T.red, fontWeight:700 }}>Slett?</span>
+                <button onClick={() => { delAtt(a.id); setConf(null) }} style={{ padding:'5px 11px', borderRadius:8, border:'none', background:T.red, color:'#fff', fontWeight:800, cursor:'pointer', fontSize:11 }}>Slett</button>
+                <button onClick={() => setConf(null)} style={{ padding:'5px 11px', borderRadius:8, border:'1px solid ' + T.border, background:'transparent', color:T.muted, cursor:'pointer', fontSize:11 }}>Avbryt</button>
+              </div>
+            )}
           </div>
         ))}
       </div>
@@ -892,73 +1257,324 @@ function LateTab({ attendance }) {
   )
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// LOG TAB
-// ═══════════════════════════════════════════════════════════════════════════════
-function LogTab({ attendance, onEdit, onDelete }) {
-  const [editing, setEditing]    = useState(null)
-  const [eStatus, setES]         = useState('attended')
-  const [eNote, setEN]           = useState('')
-  const [confirmDel, setConfirm] = useState(null)
-  const [fDate, setFD]           = useState(todayISO())
-  const [search, setSrch]        = useState('')
+// ═══════════════════════════════════════════════════════════
+// SCHEDULE ADMIN TAB
+// ═══════════════════════════════════════════════════════════
+function ScheduleAdminTab({ overrides, saveOverrides }) {
+  const [selDate, setSD]    = useState(todayISO())
+  const [editing, setEd]    = useState(null)
+  const [newStatus, setNS]  = useState('cancelled')
+  const [newNote, setNN]    = useState('')
 
-  const filtered = useMemo(() => {
-    let r = attendance
-    if (fDate)         r=r.filter(a => a.date===fDate)
-    if (search.trim()) r=r.filter(a => a.memberName.toLowerCase().includes(search.toLowerCase())||a.session.toLowerCase().includes(search.toLowerCase()))
-    return [...r].sort((a,b) => b.createdAt.localeCompare(a.createdAt)).slice(0,100)
-  }, [attendance, fDate, search])
+  const dayName = DAYS_NO[new Date(selDate).getDay() === 0 ? 6 : new Date(selDate).getDay()-1]
+  const sessions= SCHEDULE[dayName] || []
 
-  const sColor = s => s==='attended'?T.green:s==='strength'?T.yellow:T.red
-  const sLabel = s => s==='attended'?'Deltar':s==='strength'?'Styrke':'Fravær'
+  function save() {
+    const k = ovKey(selDate, editing.name)
+    const updated = { ...overrides, [k]: { status: newStatus, note: newNote.trim(), setAt: new Date().toISOString() } }
+    saveOverrides(updated)
+    setEd(null)
+  }
 
   return (
     <div>
-      <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:14 }}>
-        <input type="date" value={fDate} onChange={e => setFD(e.target.value)} style={{ padding:'8px 12px', borderRadius:9, border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:13, outline:'none' }}/>
-        <input placeholder="🔍 Navn / time…" value={search} onChange={e => setSrch(e.target.value)} style={{ flex:1, minWidth:120, padding:'8px 12px', borderRadius:9, border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:13, outline:'none' }}/>
-        <button onClick={() => setFD('')} style={{ padding:'8px 12px', borderRadius:9, border:`1px solid ${T.border}`, background:'transparent', color:T.muted, cursor:'pointer', fontSize:12 }}>Vis alle</button>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
+        <div style={{ fontWeight:900, fontSize:16 }}>📅 Timeplan-admin</div>
+        <input type="date" value={selDate} onChange={e => setSD(e.target.value)} style={{ padding:'8px 12px', borderRadius:9, border:'1px solid ' + T.border, background:T.surface, color:T.text, fontSize:13, outline:'none' }}/>
       </div>
-      <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:14, overflow:'hidden' }}>
-        {filtered.length===0 && <div style={{ padding:24, color:T.muted, textAlign:'center' }}>Ingen registreringer</div>}
-        {filtered.map(a => {
-          const miD = MI_STATUS_DISPLAY[a.miStatus||'active']||MI_STATUS_DISPLAY['not_member']
+      <div style={{ background:T.card, border:'1px solid ' + T.border, borderRadius:14, overflow:'hidden', marginBottom:12 }}>
+        <div style={{ padding:'10px 14px', borderBottom:'1px solid ' + T.border, fontWeight:800, fontSize:13, color:T.accent }}>
+          {dayName} · {selDate}
+        </div>
+        {sessions.length === 0 && <div style={{ padding:20, color:T.muted, textAlign:'center' }}>Ingen timer</div>}
+        {sessions.map(s => {
+          const k    = ovKey(selDate, s.name)
+          const ov   = overrides[k]
+          const ovSt = ov ? SESSION_STATUSES.find(x => x.key === ov.status) : null
           return (
-            <div key={a.id}>
-              <div style={{ padding:'11px 14px', borderBottom:`1px solid ${T.border}`, display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
-                <Avatar name={a.memberName} size={30}/>
-                <div style={{ flex:1, minWidth:100 }}>
-                  <div style={{ fontWeight:700, fontSize:13, display:'flex', alignItems:'center', gap:6, flexWrap:'wrap' }}>
-                    {a.memberName}<Tag c={miD.color}>{miD.label}</Tag>
-                    {a.isLate && <Tag c={T.orange}>⏱ {a.lateMinutes||'?'}min</Tag>}
-                  </div>
-                  <div style={{ fontSize:11, color:T.muted }}>{a.session} · {a.date} {a.registeredAt}</div>
-                  {a.injuryNote && <div style={{ fontSize:11, color:T.yellow }}>💬 {a.injuryNote}</div>}
-                </div>
-                <Tag c={sColor(a.status)}>{sLabel(a.status)}</Tag>
-                <div style={{ display:'flex', gap:6 }}>
-                  <button onClick={() => { setEditing(a.id); setES(a.status); setEN(a.injuryNote||''); setConfirm(null) }} style={{ padding:'5px 9px', borderRadius:7, border:`1px solid ${T.border}`, background:'transparent', color:T.muted, cursor:'pointer', fontSize:11 }}>✏️</button>
-                  <button onClick={() => { setConfirm(a.id); setEditing(null) }} style={{ padding:'5px 9px', borderRadius:7, border:`1px solid ${T.border}`, background:'transparent', color:T.red, cursor:'pointer', fontSize:11 }}>🗑</button>
-                </div>
+            <div key={s.name} style={{ padding:'11px 14px', borderBottom:'1px solid ' + T.border, display:'flex', alignItems:'center', gap:10 }}>
+              <span style={{ fontSize:20 }}>{ovSt ? ovSt.icon : s.icon}</span>
+              <div style={{ flex:1 }}>
+                <div style={{ fontWeight:700 }}>{s.name}</div>
+                <div style={{ fontSize:11, color:T.muted }}>{s.start}–{s.end}{ov && ov.note ? ' · ' + ov.note : ''}</div>
               </div>
-              {editing===a.id && (
-                <div style={{ padding:'12px 14px', background:`${T.accent}10`, borderBottom:`1px solid ${T.border}`, display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
-                  <select value={eStatus} onChange={e => setES(e.target.value)} style={{ padding:'7px 10px', borderRadius:8, border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:13, outline:'none' }}>
-                    <option value="attended">Deltar</option><option value="strength">Styrke</option><option value="absent">Fravær</option>
-                  </select>
-                  <input value={eNote} onChange={e => setEN(e.target.value)} placeholder="Kommentar…" style={{ flex:1, minWidth:100, padding:'7px 10px', borderRadius:8, border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:13, outline:'none' }}/>
-                  <button onClick={() => { onEdit(a.id,{status:eStatus,injuryNote:eNote||null}); setEditing(null) }} style={{ padding:'7px 14px', borderRadius:8, border:'none', background:T.green, color:'#fff', fontWeight:800, cursor:'pointer' }}>Lagre</button>
-                  <button onClick={() => setEditing(null)} style={{ padding:'7px 14px', borderRadius:8, border:`1px solid ${T.border}`, background:'transparent', color:T.muted, cursor:'pointer' }}>Avbryt</button>
-                </div>
+              {ov && ov.status !== 'normal' ? <Tag c={ovSt ? ovSt.color : T.muted}>{ovSt ? ovSt.label : ov.status}</Tag> : <Tag c={T.green}>Normal</Tag>}
+              <button onClick={() => { setEd(s); setNS(ov ? ov.status : 'cancelled'); setNN(ov ? ov.note || '' : '') }} style={{ padding:'6px 12px', borderRadius:8, border:'1px solid ' + T.accent + '44', background: T.accent + '15', color:T.accent, cursor:'pointer', fontSize:12, fontWeight:800 }}>
+                ✏️ Endre
+              </button>
+              {ov && ov.status !== 'normal' && (
+                <button onClick={() => { const u = { ...overrides }; delete u[k]; saveOverrides(u) }} style={{ padding:'6px 8px', borderRadius:8, border:'1px solid ' + T.border, background:'transparent', color:T.muted, cursor:'pointer', fontSize:11 }}>↩</button>
               )}
-              {confirmDel===a.id && (
-                <div style={{ padding:'10px 14px', background:`${T.red}18`, borderBottom:`1px solid ${T.border}`, display:'flex', gap:8, alignItems:'center' }}>
-                  <span style={{ flex:1, fontSize:13, color:T.red, fontWeight:700 }}>Slett denne registreringen?</span>
-                  <button onClick={() => { onDelete(a.id); setConfirm(null) }} style={{ padding:'6px 14px', borderRadius:8, border:'none', background:T.red, color:'#fff', fontWeight:800, cursor:'pointer', fontSize:12 }}>Slett</button>
-                  <button onClick={() => setConfirm(null)} style={{ padding:'6px 14px', borderRadius:8, border:`1px solid ${T.border}`, background:'transparent', color:T.muted, cursor:'pointer', fontSize:12 }}>Avbryt</button>
-                </div>
+            </div>
+          )
+        })}
+      </div>
+
+      {editing && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.88)', zIndex:500, display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
+          <div style={{ background:T.card, border:'1px solid ' + T.border, borderRadius:20, padding:24, maxWidth:420, width:'100%' }}>
+            <div style={{ fontWeight:900, fontSize:16, marginBottom:14 }}>✏️ {editing.name} · {selDate}</div>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:6, marginBottom:12 }}>
+              {SESSION_STATUSES.map(st => (
+                <button key={st.key} onClick={() => setNS(st.key)} style={{ padding:'11px', borderRadius:10, border:'2px solid ' + (newStatus === st.key ? st.color : T.border), background: newStatus === st.key ? st.color + '18' : T.surface, color: newStatus === st.key ? st.color : T.text, cursor:'pointer', fontWeight:800, fontSize:12, display:'flex', alignItems:'center', gap:6, justifyContent:'center' }}>
+                  <span style={{ fontSize:18 }}>{st.icon}</span>{st.label}
+                </button>
+              ))}
+            </div>
+            <input value={newNote} onChange={e => setNN(e.target.value)} placeholder="Notat (valgfritt)…" style={{ ...inputSt, marginBottom:12 }}/>
+            <div style={{ display:'flex', gap:8 }}>
+              <button onClick={save} style={{ flex:1, padding:'12px', borderRadius:10, border:'none', background:T.accent, color:'#fff', fontWeight:900, cursor:'pointer' }}>💾 Lagre</button>
+              <button onClick={() => setEd(null)} style={{ padding:'12px 16px', borderRadius:10, border:'1px solid ' + T.border, background:'transparent', color:T.muted, cursor:'pointer' }}>Avbryt</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════
+// FAKTURA TAB
+// ═══════════════════════════════════════════════════════════
+function FakturaTab({ members, fakturaer, setFakturaer }) {
+  const [step, setStep]       = useState('liste')
+  const [fakturaNr]           = useState(genNr)
+  const [mottaker, setMott]   = useState('member')
+  const [valgtM, setValgtM]   = useState('')
+  const [fritekstN, setFTN]   = useState('')
+  const [fritekstE, setFTE]   = useState('')
+  const [linjer, setLinjer]   = useState([{ id:1, beskrivelse:'', antall:1, enhet:'stk', pris:'' }])
+  const [forfall, setForfall] = useState(daysFromNow(14))
+  const [notat, setNotat]     = useState('')
+  const [filterSt, setFilterSt] = useState('alle')
+  const [searchQ, setSQ]      = useState('')
+  const [masseSending, setMasse] = useState(false)
+  const [masseRes, setMasseRes] = useState(null)
+
+  const athletes     = members.filter(m => !m.isCoach)
+  const saveFakt     = list => { lsSet(LS_FAKTURAER, list); setFakturaer(list) }
+
+  const subtotal = linjer.reduce((s, l) => s + (parseFloat(l.pris)||0) * (parseInt(l.antall)||0), 0)
+  const mva      = Math.round(subtotal * 0.25)
+  const total    = subtotal + mva
+
+  const bsColor = { ikke_forfalt:T.green, forfalt:T.yellow, purret:T.orange, inkasso:T.red, betalt:T.green }
+  const bsLabel = { ikke_forfalt:'Ikke forfalt', forfalt:'Forfalt', purret:'Purret', inkasso:'Inkasso', betalt:'Betalt' }
+
+  function sendMasse() {
+    setMasse(true)
+    const today   = todayISO()
+    const newFakt = [...fakturaer]
+    let count     = 0
+    athletes.forEach(m => {
+      const already = newFakt.some(f => f.memberId === m.id && f.dato === today && f.autoSent)
+      if (already) return
+      const fk    = getFritidskortstatus(m)
+      const junior= isJunior(m)
+      const avgift= (fk && fk.active) ? 0 : (junior ? JUNIOR_AVGIFT : SENIOR_AVGIFT)
+      if (avgift === 0) return
+      newFakt.unshift({
+        id: genNr(), memberId: m.id, mottaker: m.name, epost: m.email || '',
+        linjer: [{ id: Date.now() + Math.random(), beskrivelse: 'Treningsavgift ' + (junior ? 'junior' : 'senior'), antall:1, enhet:'mnd', pris:avgift }],
+        subtotal: avgift, mva: Math.round(avgift*0.25), total: avgift + Math.round(avgift*0.25),
+        forfall: daysFromNow(14), notat:'', dato: today,
+        status:'ikke_forfalt', betalingStatus:'ikke_forfalt', autoSent:true, isJunior: junior,
+      })
+      count++
+    })
+    saveFakt(newFakt)
+    setMasseRes(count)
+    setMasse(false)
+    setTimeout(() => setMasseRes(null), 4000)
+  }
+
+  function sendPurringer() {
+    const updated = fakturaer.map(f => {
+      if (f.betalingStatus === 'forfalt') return { ...f, betalingStatus:'purret' }
+      return f
+    })
+    saveFakt(updated)
+  }
+
+  function sendFaktura() {
+    const m    = mottaker === 'member' ? athletes.find(x => x.id === valgtM) : { name: fritekstN, email: fritekstE }
+    if (!m) return
+    const ny = {
+      id: fakturaNr, memberId: mottaker === 'member' ? valgtM : null,
+      mottaker: m.name, epost: m.email || '',
+      linjer: linjer.filter(l => l.beskrivelse.trim()),
+      subtotal, mva, total, forfall, notat,
+      dato: todayISO(), status:'ikke_forfalt', betalingStatus:'ikke_forfalt', autoSent:false,
+    }
+    saveFakt([ny, ...fakturaer])
+    setStep('liste')
+  }
+
+  const visF = fakturaer.filter(f => {
+    if (filterSt !== 'alle' && f.betalingStatus !== filterSt) return false
+    if (searchQ.trim() && !f.mottaker.toLowerCase().includes(searchQ.toLowerCase()) && !f.id.includes(searchQ)) return false
+    return true
+  })
+
+  if (step === 'ny') return (
+    <div>
+      <BackBtn onClick={() => setStep('liste')}/>
+      <div style={{ fontWeight:900, fontSize:16, marginBottom:14 }}>🧾 Ny faktura · <span style={{ color:T.accent }}>{fakturaNr}</span></div>
+      <div style={{ background:T.card, border:'1px solid ' + T.border, borderRadius:14, padding:14, marginBottom:10 }}>
+        <div style={{ fontWeight:800, fontSize:13, marginBottom:8 }}>1️⃣ Mottaker</div>
+        <div style={{ display:'flex', gap:8, marginBottom:10 }}>
+          {[{k:'member',l:'Fra liste'},{k:'fritekst',l:'Skriv inn'}].map(o => (
+            <button key={o.k} onClick={() => setMott(o.k)} style={{ flex:1, padding:'10px', borderRadius:9, border:'2px solid ' + (mottaker === o.k ? T.accent : T.border), background: mottaker === o.k ? T.accent + '15' : T.surface, color:T.text, cursor:'pointer', fontWeight:800, fontSize:13 }}>{o.l}</button>
+          ))}
+        </div>
+        {mottaker === 'member' ? (
+          <select value={valgtM} onChange={e => setValgtM(e.target.value)} style={{ width:'100%', padding:'11px 14px', borderRadius:10, border:'2px solid ' + (valgtM ? T.accent : T.border), background:T.surface, color:T.text, fontSize:14, outline:'none' }}>
+            <option value="">– Velg utøver –</option>
+            {athletes.map(m => (
+              <option key={m.id} value={m.id}>
+                {m.name} {isJunior(m) ? '(junior ' + JUNIOR_AVGIFT + 'kr)' : '(senior ' + SENIOR_AVGIFT + 'kr)'}
+                {getFritidskortstatus(m) && getFritidskortstatus(m).active ? ' – Fritidskort' : ''}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+            <input placeholder="Navn *" value={fritekstN} onChange={e => setFTN(e.target.value)} style={inputSt}/>
+            <input placeholder="E-post" value={fritekstE} onChange={e => setFTE(e.target.value)} style={inputSt}/>
+          </div>
+        )}
+      </div>
+      <div style={{ background:T.card, border:'1px solid ' + T.border, borderRadius:14, padding:14, marginBottom:10 }}>
+        <div style={{ fontWeight:800, fontSize:13, marginBottom:8 }}>2️⃣ Linjer</div>
+        <div style={{ display:'flex', flexWrap:'wrap', gap:5, marginBottom:8 }}>
+          {FAKTURA_KATEGORIER.map(k => (
+            <button key={k} onClick={() => setLinjer(p => [...p, { id: Date.now() + Math.random(), beskrivelse:k, antall:1, enhet:'stk', pris:'' }])} style={{ padding:'5px 10px', borderRadius:99, border:'1px solid ' + T.border, background:T.surface, color:T.muted, cursor:'pointer', fontSize:11, fontWeight:700 }}>
+              + {k}
+            </button>
+          ))}
+        </div>
+        {linjer.map(l => {
+          const sum = (parseFloat(l.pris)||0) * (parseInt(l.antall)||0)
+          return (
+            <div key={l.id} style={{ display:'flex', gap:6, marginBottom:6, alignItems:'center' }}>
+              <input value={l.beskrivelse} onChange={e => setLinjer(p => p.map(x => x.id === l.id ? { ...x, beskrivelse: e.target.value } : x))} placeholder="Beskrivelse" style={{ ...inputSt, flex:3 }}/>
+              <input type="number" value={l.antall} onChange={e => setLinjer(p => p.map(x => x.id === l.id ? { ...x, antall: e.target.value } : x))} style={{ ...inputSt, width:50, textAlign:'center' }}/>
+              <input type="number" value={l.pris} onChange={e => setLinjer(p => p.map(x => x.id === l.id ? { ...x, pris: e.target.value } : x))} placeholder="Kr" style={{ ...inputSt, width:70, textAlign:'right' }}/>
+              <span style={{ color:T.green, fontWeight:800, fontSize:12, minWidth:50 }}>{sum > 0 ? sum + ' kr' : '–'}</span>
+              {linjer.length > 1 && (
+                <button onClick={() => setLinjer(p => p.filter(x => x.id !== l.id))} style={{ background:'none', border:'none', color:T.red, cursor:'pointer', fontSize:16 }}>×</button>
               )}
+            </div>
+          )
+        })}
+        <button onClick={() => setLinjer(p => [...p, { id: Date.now() + Math.random(), beskrivelse:'', antall:1, enhet:'stk', pris:'' }])} style={{ padding:'8px', borderRadius:9, border:'1px dashed ' + T.accent, background: T.accent + '10', color:T.accent, cursor:'pointer', fontSize:12, width:'100%', marginTop:6 }}>
+          + Legg til linje
+        </button>
+        {subtotal > 0 && (
+          <div style={{ marginTop:12, borderTop:'1px solid ' + T.border, paddingTop:10 }}>
+            {[{l:'Subtotal',v:subtotal + ' kr'},{l:'MVA 25%',v:mva + ' kr'},{l:'TOTALT',v:total + ' kr',bold:true}].map(r => (
+              <div key={r.l} style={{ display:'flex', justifyContent:'space-between', padding:'4px 0', fontSize: r.bold ? 15 : 13 }}>
+                <span style={{ color: r.bold ? T.text : T.muted, fontWeight: r.bold ? 900 : 500 }}>{r.l}</span>
+                <span style={{ color: r.bold ? T.green : T.muted, fontWeight: r.bold ? 900 : 500 }}>{r.v}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      <div style={{ background:T.card, border:'1px solid ' + T.border, borderRadius:14, padding:14, marginBottom:14 }}>
+        <div style={{ fontWeight:800, fontSize:13, marginBottom:8 }}>3️⃣ Detaljer</div>
+        <div style={{ display:'flex', gap:8, marginBottom:8 }}>
+          <div style={{ flex:1 }}>
+            <div style={{ fontSize:11, color:T.muted, marginBottom:4 }}>Forfallsdato</div>
+            <input type="date" value={forfall} onChange={e => setForfall(e.target.value)} style={inputSt}/>
+          </div>
+        </div>
+        <input placeholder="Notat (f.eks. kontonummer)" value={notat} onChange={e => setNotat(e.target.value)} style={inputSt}/>
+      </div>
+      <BigBtn onClick={sendFaktura} disabled={!(mottaker === 'member' ? valgtM : fritekstN.trim()) || !linjer.some(l => l.beskrivelse.trim() && l.pris)}>
+        🧾 Send faktura{total > 0 ? ' – ' + total + ' kr' : ''}
+      </BigBtn>
+    </div>
+  )
+
+  return (
+    <div>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10, flexWrap:'wrap', gap:8 }}>
+        <div>
+          <div style={{ fontWeight:900, fontSize:16 }}>🧾 Faktura</div>
+          <div style={{ fontSize:12, color:T.muted }}>Neste auto-utsendelse: <strong style={{ color:T.green }}>{getNextFakturaDate()}</strong> (2. mandag)</div>
+        </div>
+        <button onClick={() => setStep('ny')} style={{ padding:'10px 18px', borderRadius:10, border:'none', background:T.accent, color:'#fff', fontWeight:900, fontSize:13, cursor:'pointer' }}>+ Ny faktura</button>
+      </div>
+
+      <div style={{ background:T.card, border:'1px solid ' + T.border, borderRadius:14, padding:14, marginBottom:12 }}>
+        <div style={{ fontWeight:800, fontSize:13, marginBottom:8 }}>🤖 Automatikk</div>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
+          <button onClick={sendMasse} disabled={masseSending} style={{ padding:'12px', borderRadius:10, border:'1px solid ' + T.green + '55', background: T.green + '15', color:T.green, cursor:'pointer', fontWeight:800, fontSize:13 }}>
+            {masseSending ? 'Sender…' : '📤 Send månedsfakturaer'}
+          </button>
+          <button onClick={sendPurringer} style={{ padding:'12px', borderRadius:10, border:'1px solid ' + T.orange + '55', background: T.orange + '15', color:T.orange, cursor:'pointer', fontWeight:800, fontSize:13 }}>
+            📬 Send purringer
+          </button>
+        </div>
+        {masseRes !== null && (
+          <div style={{ marginTop:8, padding:'8px 12px', borderRadius:8, background: T.green + '15', color:T.green, fontSize:12, fontWeight:800 }}>
+            ✅ Sendte {masseRes} fakturaer
+          </div>
+        )}
+        <div style={{ marginTop:8, fontSize:11, color:T.muted }}>
+          Junior: <strong style={{ color:T.blue }}>{JUNIOR_AVGIFT} kr</strong> · Senior: <strong style={{ color:T.gold }}>{SENIOR_AVGIFT} kr</strong> · Fritidskort: <strong style={{ color:T.purple }}>0 kr (første {FRITIDSKORT_MONTHS} mnd)</strong>
+        </div>
+      </div>
+
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(90px,1fr))', gap:6, marginBottom:10 }}>
+        {[...BETALING_STATUSER, {key:'betalt',label:'Betalt',color:T.green,icon:'💰'}].map(s => {
+          const count = fakturaer.filter(f => f.betalingStatus === s.key).length
+          return (
+            <div key={s.key} onClick={() => setFilterSt(filterSt === s.key ? 'alle' : s.key)} style={{ background:T.card, border:'1px solid ' + (count > 0 && s.key !== 'betalt' && s.key !== 'ikke_forfalt' ? s.color : T.border) + '44', borderRadius:10, padding:'10px 8px', textAlign:'center', cursor:'pointer', opacity: filterSt === s.key ? 1 : 0.7 }}>
+              <div style={{ fontSize:9 }}>{s.icon}</div>
+              <div style={{ fontWeight:900, fontSize:18, color:s.color }}>{count}</div>
+              <div style={{ fontSize:9, color:T.muted, fontWeight:700, textTransform:'uppercase' }}>{s.label}</div>
+            </div>
+          )
+        })}
+      </div>
+
+      <div style={{ display:'flex', gap:6, marginBottom:10, flexWrap:'wrap' }}>
+        <input placeholder="🔍 Søk…" value={searchQ} onChange={e => setSQ(e.target.value)} style={{ flex:1, minWidth:120, padding:'7px 10px', borderRadius:9, border:'1px solid ' + T.border, background:T.surface, color:T.text, fontSize:12, outline:'none' }}/>
+        {['alle', ...BETALING_STATUSER.map(s => s.key), 'betalt'].map(s => (
+          <button key={s} onClick={() => setFilterSt(s)} style={{ padding:'6px 10px', borderRadius:9, border:'1px solid ' + (filterSt === s ? T.accent : T.border), background: filterSt === s ? T.accent : 'transparent', color: filterSt === s ? '#fff' : T.muted, cursor:'pointer', fontSize:11, fontWeight:700 }}>
+            {s === 'alle' ? 'Alle' : bsLabel[s] || s}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ background:T.card, border:'1px solid ' + T.border, borderRadius:14, overflow:'hidden' }}>
+        {visF.length === 0 && <div style={{ padding:24, color:T.muted, textAlign:'center' }}>Ingen fakturaer</div>}
+        {visF.map((f, i) => {
+          const bc = bsColor[f.betalingStatus] || T.muted
+          const bl = bsLabel[f.betalingStatus] || f.betalingStatus
+          return (
+            <div key={f.id} style={{ padding:'12px 14px', borderBottom: i < visF.length-1 ? '1px solid ' + T.border : 'none', display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
+              <div style={{ flex:1, minWidth:100 }}>
+                <div style={{ fontWeight:800, fontSize:13 }}>
+                  {f.mottaker}
+                  {f.isJunior && ' 🧒'}
+                  {f.autoSent && ' 🤖'}
+                </div>
+                <div style={{ fontSize:11, color:T.muted }}>{f.id} · {f.dato} · Forfall {f.forfall}</div>
+              </div>
+              <span style={{ fontWeight:900, fontSize:14, color:T.green }}>{f.total.toLocaleString('nb-NO')} kr</span>
+              <Tag c={bc}>{bl}</Tag>
+              <div style={{ display:'flex', gap:5 }}>
+                {f.betalingStatus !== 'betalt' && (
+                  <button onClick={() => saveFakt(fakturaer.map(x => x.id === f.id ? { ...x, betalingStatus:'betalt' } : x))} style={{ padding:'4px 8px', borderRadius:7, border:'1px solid ' + T.green + '44', background: T.green + '15', color:T.green, cursor:'pointer', fontSize:11, fontWeight:800 }}>Betalt</button>
+                )}
+                {f.betalingStatus === 'forfalt' && (
+                  <button onClick={() => saveFakt(fakturaer.map(x => x.id === f.id ? { ...x, betalingStatus:'purret' } : x))} style={{ padding:'4px 8px', borderRadius:7, border:'1px solid ' + T.orange + '44', background: T.orange + '15', color:T.orange, cursor:'pointer', fontSize:11, fontWeight:800 }}>Purr</button>
+                )}
+                <button onClick={() => saveFakt(fakturaer.filter(x => x.id !== f.id))} style={{ padding:'4px 8px', borderRadius:7, border:'1px solid ' + T.border, background:'transparent', color:T.red, cursor:'pointer', fontSize:11 }}>🗑</button>
+              </div>
             </div>
           )
         })}
@@ -967,830 +1583,358 @@ function LogTab({ attendance, onEdit, onDelete }) {
   )
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════
 // SMS TAB
-// ═══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════
 function SmsTab({ members, attendance }) {
   const [period, setPeriod]    = useState(30)
   const [threshold, setThresh] = useState(80)
-  const [msgTemplate, setMsg]  = useState('Hei {navn}! 🏆 Du har oppnådd {prosent}% oppmøte på Spartacus ({periode} dager). Fantastisk innsats – du er kampklar! 💪 – Coach Dale / Spartacus')
+  const [msgType, setMsgType]  = useState('motivasjon')
+  const [msgTpl, setMsgTpl]    = useState('Hei {navn}! 🔥 Du har trent {prosent}% de siste {periode} dagene – imponerende innsats! Hold det gående 💪 – Spartacus')
   const [sent, setSent]        = useState([])
-  const [preview, setPreview]  = useState(null)
   const [sending, setSending]  = useState(false)
-  const [smsLog, setSmsLog]    = useState([])
+  const [log, setLog]          = useState([])
 
-  const cutoff = daysAgo(period)
-  const eligible = useMemo(() =>
-    members.filter(m => !m.isCoach).map(m => {
-      const logs = attendance.filter(a => a.memberId===m.id&&a.date>=cutoff&&WEEKDAYS_SMS.includes(a.day))
-      const att  = logs.filter(a => a.status!=='absent').length
-      const elig = calcEligibility(att, logs.length)
-      return { ...m, elig, sessions:logs.length }
-    }).filter(m => m.elig.pct>=threshold).sort((a,b) => b.elig.pct-a.elig.pct)
-  , [members, attendance, period, threshold])
+  const TEMPLATES = {
+    motivasjon: 'Hei {navn}! 🔥 Du har trent {prosent}% de siste {periode} dagene – imponerende innsats! Hold det gående 💪 – Spartacus',
+    faktura:    'Hei {navn}! Husk treningsavgiften for denne måneden. Ta kontakt ved spørsmål 📞 – Spartacus',
+    purring:    'Hei {navn}! Vi mangler betaling. Vennligst betal snarest for å unngå inkasso 📬 – Spartacus',
+    arrangement:'Hei {navn}! 🥊 Husk arrangement denne helgen – møt opp og vis hva du er laget av! – Spartacus',
+    kursstart:  'Hei {navn}! Nytt kurs starter snart – er du klar? Meld deg på nå 🚀 – Spartacus',
+  }
+
+  const cutoff   = daysAgo(period)
+  const eligible = useMemo(() => {
+    return members.filter(m => !m.isCoach).map(m => {
+      const logs = attendance.filter(a => a.memberId === m.id && a.date >= cutoff)
+      const att  = logs.filter(a => a.status !== 'absent').length
+      const pct  = logs.length > 0 ? Math.round((att/logs.length)*100) : 0
+      return { ...m, pct, sessions: logs.length }
+    }).filter(m => m.pct >= threshold).sort((a, b) => b.pct - a.pct)
+  }, [members, attendance, period, threshold])
 
   const alreadySent = useMemo(() => new Set(sent.map(s => s.id)), [sent])
-  function buildMessage(m) { return msgTemplate.replace('{navn}',m.name.split(' ')[0]).replace('{prosent}',m.elig.pct).replace('{periode}',period) }
+  const buildMsg    = m => msgTpl.replace('{navn}', m.name.split(' ')[0]).replace('{prosent}', m.pct).replace('{periode}', period)
 
   async function sendAll() {
     setSending(true)
     for (const m of eligible.filter(m => !alreadySent.has(m.id))) {
       await new Promise(r => setTimeout(r, 200))
-      const e = { id:m.id, name:m.name, phone:m.phone||'Ukjent', pct:m.elig.pct, msg:buildMessage(m), sentAt:new Date().toLocaleString('nb-NO') }
-      setSent(p => [...p,e]); setSmsLog(p => [e,...p])
+      const e = { id: m.id, name: m.name, phone: m.phone || 'Ukjent', pct: m.pct, msg: buildMsg(m), sentAt: new Date().toLocaleString('nb-NO') }
+      setSent(p => [...p, e])
+      setLog(p => [e, ...p])
     }
     setSending(false)
-  }
-
-  async function sendOne(m) {
-    if (alreadySent.has(m.id)) return
-    await new Promise(r => setTimeout(r, 200))
-    const e = { id:m.id, name:m.name, phone:m.phone||'Ukjent', pct:m.elig.pct, msg:buildMessage(m), sentAt:new Date().toLocaleString('nb-NO') }
-    setSent(p => [...p,e]); setSmsLog(p => [e,...p])
   }
 
   const unsent = eligible.filter(m => !alreadySent.has(m.id))
 
   return (
     <div>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:14, flexWrap:'wrap', gap:10 }}>
-        <div><div style={{ fontWeight:900, fontSize:16, marginBottom:2 }}>📱 Automatisk SMS – Kampklar</div><div style={{ fontSize:12, color:T.muted }}>Kun søn–fre teller iht. regelverket</div></div>
-        <div style={{ display:'flex', gap:6 }}>
-          <select value={period} onChange={e => setPeriod(+e.target.value)} style={selSt}>
-            <option value={7}>7d</option><option value={30}>30d</option><option value={60}>60d</option><option value={90}>90d</option>
-          </select>
-          <select value={threshold} onChange={e => setThresh(+e.target.value)} style={selSt}>
-            <option value={70}>≥ 70%</option><option value={80}>≥ 80%</option><option value={85}>≥ 85%</option><option value={90}>≥ 90%</option>
-          </select>
+      <div style={{ fontWeight:900, fontSize:16, marginBottom:12 }}>📱 SMS-utsendelse</div>
+      <div style={{ background:T.card, border:'1px solid ' + T.border, borderRadius:14, padding:14, marginBottom:12 }}>
+        <div style={{ fontWeight:800, fontSize:13, marginBottom:8 }}>📝 Velg mal</div>
+        <div style={{ display:'flex', flexWrap:'wrap', gap:6, marginBottom:10 }}>
+          {[{k:'motivasjon',l:'💪 Motivasjon'},{k:'faktura',l:'💳 Faktura'},{k:'purring',l:'📬 Purring'},{k:'arrangement',l:'🥊 Arrangement'},{k:'kursstart',l:'🚀 Kursstart'}].map(t => (
+            <button key={t.k} onClick={() => { setMsgType(t.k); setMsgTpl(TEMPLATES[t.k]) }} style={{ padding:'6px 12px', borderRadius:99, border:'1px solid ' + (msgType === t.k ? T.accent : T.border), background: msgType === t.k ? T.accent : 'transparent', color: msgType === t.k ? '#fff' : T.muted, cursor:'pointer', fontSize:12, fontWeight:700 }}>
+              {t.l}
+            </button>
+          ))}
+        </div>
+        <textarea value={msgTpl} onChange={e => setMsgTpl(e.target.value)} rows={3} style={{ width:'100%', padding:'10px 12px', borderRadius:10, border:'1px solid ' + T.border, background:T.surface, color:T.text, fontSize:13, outline:'none', resize:'vertical', boxSizing:'border-box', fontFamily:'inherit' }}/>
+        <div style={{ fontSize:11, color:T.muted, marginTop:4 }}>{msgTpl.length}/160 tegn</div>
+      </div>
+      <div style={{ display:'flex', gap:8, marginBottom:10, flexWrap:'wrap' }}>
+        <select value={period} onChange={e => setPeriod(+e.target.value)} style={selSt}><option value={7}>7d</option><option value={30}>30d</option><option value={60}>60d</option><option value={90}>90d</option></select>
+        <select value={threshold} onChange={e => setThresh(+e.target.value)} style={selSt}><option value={0}>Alle</option><option value={50}>≥50%</option><option value={70}>≥70%</option><option value={80}>≥80%</option></select>
+        <div style={{ flex:1, display:'flex', gap:6, alignItems:'center' }}>
+          <span style={{ fontSize:12, color:T.muted }}>{eligible.length} utøvere</span>
+          {unsent.length > 0 && (
+            <button onClick={sendAll} disabled={sending} style={{ flex:1, padding:'8px 14px', borderRadius:9, border:'none', background: sending ? T.dim : T.accent, color:'#fff', fontWeight:800, cursor: sending ? 'not-allowed' : 'pointer', fontSize:13 }}>
+              {sending ? 'Sender…' : '📤 Send alle (' + unsent.length + ')'}
+            </button>
+          )}
         </div>
       </div>
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(130px,1fr))', gap:10, marginBottom:16 }}>
-        {[{n:eligible.length,l:`≥ ${threshold}%`,c:T.green},{n:unsent.length,l:'Klar til send',c:T.accent},{n:alreadySent.size,l:'Sendt',c:T.blue}].map(({n,l,c}) => (
-          <div key={l} style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:12, padding:'14px 10px', textAlign:'center' }}>
-            <div style={{ fontSize:28, fontWeight:900, color:c, lineHeight:1 }}>{n}</div>
-            <div style={{ fontSize:10, color:T.muted, marginTop:5, fontWeight:700, textTransform:'uppercase' }}>{l}</div>
-          </div>
-        ))}
-      </div>
-      <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:14, padding:16, marginBottom:16 }}>
-        <div style={{ fontWeight:800, fontSize:13, marginBottom:8 }}>✏️ SMS-mal</div>
-        <div style={{ fontSize:11, color:T.muted, marginBottom:8 }}>Variabler: <code style={{ background:T.surface, padding:'1px 5px', borderRadius:4 }}>{'{navn}'}</code> <code style={{ background:T.surface, padding:'1px 5px', borderRadius:4 }}>{'{prosent}'}</code> <code style={{ background:T.surface, padding:'1px 5px', borderRadius:4 }}>{'{periode}'}</code></div>
-        <textarea value={msgTemplate} onChange={e => setMsg(e.target.value)} rows={3} style={{ width:'100%', padding:'12px 14px', borderRadius:10, border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:13, outline:'none', resize:'vertical', boxSizing:'border-box', fontFamily:'inherit' }}/>
-      </div>
-      <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:14, overflow:'hidden', marginBottom:16 }}>
-        <div style={{ padding:'12px 16px', borderBottom:`1px solid ${T.border}`, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-          <div style={{ fontWeight:800, fontSize:13 }}>Mottakerliste ({eligible.length})</div>
-          {unsent.length>0 && <button onClick={sendAll} disabled={sending} style={{ padding:'8px 18px', borderRadius:9, border:'none', background:sending?T.dim:T.accent, color:'#fff', fontWeight:800, cursor:sending?'not-allowed':'pointer', fontSize:13 }}>{sending?'Sender…':`📤 Send alle (${unsent.length})`}</button>}
-        </div>
-        {eligible.length===0 && <div style={{ padding:24, color:T.muted, textAlign:'center' }}>Ingen har nådd {threshold}% i perioden</div>}
+      <div style={{ background:T.card, border:'1px solid ' + T.border, borderRadius:14, overflow:'hidden', marginBottom:12 }}>
+        {eligible.length === 0 && <div style={{ padding:24, color:T.muted, textAlign:'center' }}>Ingen oppfyller filteret</div>}
         {eligible.map(m => {
           const isSent = alreadySent.has(m.id)
           return (
-            <div key={m.id} style={{ padding:'11px 16px', borderBottom:`1px solid ${T.border}`, display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
-              <Avatar name={m.name} size={30}/>
-              <div style={{ flex:1, minWidth:100 }}><div style={{ fontWeight:700, fontSize:13 }}>{m.name}</div><div style={{ fontSize:11, color:T.muted }}>{m.phone||'Ingen telefon'} · {m.sessions} timer</div></div>
-              <span style={{ padding:'4px 10px', borderRadius:99, background:m.elig.bg, color:m.elig.color, fontSize:11, fontWeight:800 }}>{m.elig.pct}%</span>
-              {isSent
-                ? <Tag c={T.green}>✓ Sendt</Tag>
-                : <button onClick={() => setPreview(m)} style={{ padding:'6px 12px', borderRadius:8, border:`1px solid ${T.accent}55`, background:`${T.accent}15`, color:T.accentL, cursor:'pointer', fontSize:11, fontWeight:800 }}>Forhåndsvis</button>}
+            <div key={m.id} style={{ padding:'10px 14px', borderBottom:'1px solid ' + T.border, display:'flex', alignItems:'center', gap:10 }}>
+              <Avatar name={m.name} size={28}/>
+              <div style={{ flex:1 }}>
+                <div style={{ fontWeight:700, fontSize:13 }}>{m.name}</div>
+                <div style={{ fontSize:11, color:T.muted }}>{m.phone || 'Ingen tlf'} · {m.pct}%</div>
+              </div>
+              {isSent ? (
+                <Tag c={T.green}>✓</Tag>
+              ) : (
+                <button onClick={() => { const e = { id:m.id, name:m.name, phone:m.phone||'Ukjent', pct:m.pct, msg:buildMsg(m), sentAt:new Date().toLocaleString('nb-NO') }; setSent(p=>[...p,e]); setLog(p=>[e,...p]) }} style={{ padding:'5px 10px', borderRadius:8, border:'1px solid ' + T.accent + '44', background: T.accent + '15', color:T.accentL, cursor:'pointer', fontSize:11, fontWeight:800 }}>
+                  Send
+                </button>
+              )}
             </div>
           )
         })}
       </div>
-      {smsLog.length>0 && (
-        <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:14, overflow:'hidden' }}>
-          <div style={{ padding:'12px 16px', borderBottom:`1px solid ${T.border}`, fontWeight:800, fontSize:13, display:'flex', justifyContent:'space-between', alignItems:'center' }}><span>📋 SMS-logg</span><Tag c={T.green}>{smsLog.length} sendt</Tag></div>
-          {smsLog.map((s,i) => (
-            <div key={s.id+i} style={{ padding:'10px 16px', borderBottom:i<smsLog.length-1?`1px solid ${T.border}`:'none', display:'flex', gap:10, alignItems:'flex-start' }}>
-              <Avatar name={s.name} size={26}/>
-              <div style={{ flex:1 }}><div style={{ fontWeight:700, fontSize:12 }}>{s.name} <span style={{ color:T.muted, fontWeight:400 }}>· {s.phone}</span></div><div style={{ fontSize:11, color:T.muted, fontStyle:'italic', marginTop:2 }}>"{s.msg.slice(0,80)}{s.msg.length>80?'…':''}"</div></div>
-              <div style={{ textAlign:'right', flexShrink:0 }}><Tag c={T.green}>✓</Tag><div style={{ fontSize:10, color:T.muted, marginTop:4 }}>{s.sentAt}</div></div>
-            </div>
-          ))}
-        </div>
-      )}
-      {preview && (
-        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.85)', zIndex:500, display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
-          <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:20, padding:24, maxWidth:440, width:'100%' }}>
-            <div style={{ fontWeight:900, fontSize:16, marginBottom:14 }}>📱 Forhåndsvis SMS</div>
-            <div style={{ display:'flex', gap:10, alignItems:'center', marginBottom:16, padding:'10px 14px', borderRadius:12, background:T.surface }}>
-              <Avatar name={preview.name} size={36}/>
-              <div><div style={{ fontWeight:800 }}>{preview.name}</div><div style={{ fontSize:12, color:T.muted }}>{preview.phone||'Ukjent nummer'} · {preview.elig.pct}%</div></div>
-            </div>
-            <div style={{ background:'#1a2a1a', border:`1px solid ${T.green}33`, borderRadius:12, padding:'14px 16px', fontSize:14, lineHeight:1.6, color:'#c8e6c9', fontFamily:'monospace', marginBottom:20, whiteSpace:'pre-wrap' }}>{buildMessage(preview)}</div>
-            <div style={{ display:'flex', gap:8 }}>
-              <button onClick={() => { sendOne(preview); setPreview(null) }} style={{ flex:1, padding:'12px', borderRadius:10, border:'none', background:T.accent, color:'#fff', fontWeight:900, fontSize:14, cursor:'pointer' }}>📤 Send nå</button>
-              <button onClick={() => setPreview(null)} style={{ padding:'12px 20px', borderRadius:10, border:`1px solid ${T.border}`, background:'transparent', color:T.muted, cursor:'pointer' }}>Avbryt</button>
-            </div>
+      {log.length > 0 && (
+        <div style={{ background:T.card, border:'1px solid ' + T.border, borderRadius:14, overflow:'hidden' }}>
+          <div style={{ padding:'10px 14px', borderBottom:'1px solid ' + T.border, fontWeight:800, fontSize:13, display:'flex', justifyContent:'space-between' }}>
+            <span>📋 Logg</span>
+            <Tag c={T.green}>{log.length}</Tag>
           </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// BETALING TAB
-// ═══════════════════════════════════════════════════════════════════════════════
-function BetalingTab({ members }) {
-  const [provider, setProvider]     = useState(null)
-  const [subStep, setSubStep]       = useState('choose')
-  const [product, setProduct]       = useState(PAYMENT_PRODUCTS[0])
-  const [customAmt, setCustomAmt]   = useState('')
-  const [sendMethod, setSendMethod] = useState('sms')
-  const [selectedMembers, setSelM]  = useState([])
-  const [searchQ, setSearchQ]       = useState('')
-  const [sentRequests, setSent]     = useState([])
-  const [sending, setSending]       = useState(false)
-  const [vippsNum, setVippsNum]     = useState('')
-  const [vippsMSN, setVippsMSN]     = useState('')
-  const [izEmail, setIzEmail]       = useState('')
-
-  const finalAmount = customAmt ? parseInt(customAmt) : product.amount
-  const athletes    = members.filter(m => !m.isCoach)
-  const filteredM   = athletes.filter(m => !searchQ.trim()||m.name.toLowerCase().includes(searchQ.toLowerCase()))
-
-  function toggleMember(id) { setSelM(p => p.includes(id)?p.filter(x=>x!==id):[...p,id]) }
-
-  async function sendRequests() {
-    setSending(true)
-    await new Promise(r => setTimeout(r, 800))
-    const now = new Date().toLocaleString('nb-NO')
-    setSent(p => [...athletes.filter(m => selectedMembers.includes(m.id)).map(m => ({
-      id:`pay_${Date.now()}_${m.id}`, name:m.name,
-      contact:sendMethod==='sms'?(m.phone||'Ukjent'):'epost@eksempel.no',
-      method:sendMethod, amount:finalAmount, product:product.label,
-      provider, status:'sendt', sentAt:now,
-    })), ...p])
-    setSelM([]); setSubStep('done'); setSending(false)
-  }
-
-  if (subStep==='choose') return (
-    <div>
-      <div style={{ fontWeight:900, fontSize:16, marginBottom:4 }}>💳 Betaling & fakturering</div>
-      <div style={{ color:T.muted, fontSize:13, marginBottom:20 }}>Send betalingsforespørsel til utøvere. Velg løsning:</div>
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14, marginBottom:24 }}>
-        {[
-          { key:'vipps',   label:'Vipps',           color:'#ff5b24', logo:'🧡', desc:'Send betalingslenke på SMS.', badge:'🇳🇴 Mest brukt' },
-          { key:'izettle', label:'Zettle (iZettle)', color:'#009b77', logo:'💚', desc:'Send faktura på e-post.',    badge:'💳 Kort & faktura' },
-        ].map(opt => (
-          <button key={opt.key} onClick={() => { setProvider(opt.key); setSubStep('setup') }} style={{ padding:'24px 16px', borderRadius:18, border:`2px solid ${T.border}`, background:T.card, cursor:'pointer', textAlign:'center', display:'flex', flexDirection:'column', alignItems:'center', gap:10 }}>
-            <div style={{ width:56, height:56, borderRadius:16, background:opt.color, display:'flex', alignItems:'center', justifyContent:'center', fontSize:28 }}>{opt.logo}</div>
-            <div style={{ fontWeight:900, fontSize:16, color:opt.color }}>{opt.label}</div>
-            <div style={{ fontSize:11, color:T.muted, lineHeight:1.5 }}>{opt.desc}</div>
-            <div style={{ padding:'5px 12px', borderRadius:99, background:`${opt.color}22`, color:opt.color, fontSize:11, fontWeight:800 }}>{opt.badge}</div>
-          </button>
-        ))}
-      </div>
-      {sentRequests.length>0 && (
-        <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:14, overflow:'hidden' }}>
-          <div style={{ padding:'12px 16px', borderBottom:`1px solid ${T.border}`, fontWeight:800, fontSize:13, display:'flex', justifyContent:'space-between', alignItems:'center' }}><span>Siste betalinger</span><Tag c={T.green}>{sentRequests.length} sendt</Tag></div>
-          {sentRequests.slice(0,8).map((r,i) => (
-            <div key={r.id} style={{ padding:'10px 16px', borderBottom:i<Math.min(sentRequests.length,8)-1?`1px solid ${T.border}`:'none', display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
-              <Avatar name={r.name} size={28}/><div style={{ flex:1 }}><div style={{ fontWeight:700, fontSize:12 }}>{r.name}</div><div style={{ fontSize:11, color:T.muted }}>{r.product}</div></div>
-              <span style={{ fontWeight:900, color:T.green, fontSize:13 }}>{r.amount} kr</span><Tag c={T.green}>✓</Tag>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-
-  if (subStep==='setup') {
-    const isVipps = provider==='vipps'; const color = isVipps?'#ff5b24':'#009b77'
-    return (
-      <div>
-        <BackBtn onClick={() => setSubStep('choose')}/>
-        <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:20 }}>
-          <div style={{ width:44, height:44, borderRadius:14, background:color, display:'flex', alignItems:'center', justifyContent:'center', fontSize:22 }}>{isVipps?'🧡':'💚'}</div>
-          <div><div style={{ fontWeight:900, fontSize:18, color }}>{isVipps?'Vipps oppsett':'Zettle oppsett'}</div><div style={{ fontSize:12, color:T.muted }}>Tar ca. 5 minutter</div></div>
-        </div>
-        <div style={{ display:'flex', flexDirection:'column', gap:10, marginBottom:20 }}>
-          {(isVipps?[
-            {n:1,t:'Last ned Vipps-appen',d:'App Store eller Google Play → søk «Vipps»'},
-            {n:2,t:'Lag bedriftskonto',d:'vipps.no → «For bedrifter» → fyll inn org.nummer'},
-            {n:3,t:'Skriv inn detaljer',d:'Vipps-nummer og MSN-nummer fra Vipps-portalen'},
-            {n:4,t:'Klar!',d:'Send betalingslenker direkte på SMS'},
-          ]:[
-            {n:1,t:'Lag Zettle-konto',d:'zettle.com/no → «Kom i gang gratis»'},
-            {n:2,t:'Koble til bankkonto',d:'Innstillinger → Utbetalinger → legg til kontonr'},
-            {n:3,t:'Skriv inn e-post',d:'E-posten du bruker på Zettle'},
-            {n:4,t:'Klar!',d:'Utøvere får profesjonell faktura på e-post'},
-          ]).map((s,i) => (
-            <div key={s.n} style={{ padding:'16px 18px', borderRadius:14, background:T.card, border:`1px solid ${T.border}`, display:'flex', gap:14, alignItems:'flex-start' }}>
-              <div style={{ width:36, height:36, borderRadius:'50%', background:`${color}22`, border:`2px solid ${color}`, display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, color, fontSize:16, flexShrink:0 }}>{s.n}</div>
+          {log.slice(0, 10).map((s, i) => (
+            <div key={s.id + '' + i} style={{ padding:'8px 14px', borderBottom: i < Math.min(log.length,10)-1 ? '1px solid ' + T.border : 'none', display:'flex', gap:8 }}>
+              <Avatar name={s.name} size={24}/>
               <div style={{ flex:1 }}>
-                <div style={{ fontWeight:800, fontSize:14, marginBottom:4 }}>{s.t}</div>
-                <div style={{ fontSize:13, color:T.muted }}>{s.d}</div>
-                {i===2 && isVipps && (
-                  <div style={{ marginTop:10, display:'flex', gap:8, flexWrap:'wrap' }}>
-                    <input value={vippsNum} onChange={e => setVippsNum(e.target.value)} placeholder="Vipps-nummer" style={{ flex:1, minWidth:130, padding:'9px 12px', borderRadius:9, border:`2px solid ${vippsNum?color:T.border}`, background:T.surface, color:T.text, fontSize:13, outline:'none' }}/>
-                    <input value={vippsMSN} onChange={e => setVippsMSN(e.target.value)} placeholder="MSN-nummer"   style={{ flex:1, minWidth:100, padding:'9px 12px', borderRadius:9, border:`2px solid ${vippsMSN?color:T.border}`, background:T.surface, color:T.text, fontSize:13, outline:'none' }}/>
-                  </div>
-                )}
-                {i===2 && !isVipps && <input value={izEmail} onChange={e => setIzEmail(e.target.value)} placeholder="E-post til Zettle-kontoen" style={{ marginTop:10, width:'100%', padding:'9px 12px', borderRadius:9, border:`2px solid ${izEmail?color:T.border}`, background:T.surface, color:T.text, fontSize:13, outline:'none', boxSizing:'border-box' }}/>}
+                <div style={{ fontWeight:700, fontSize:12 }}>{s.name}</div>
+                <div style={{ fontSize:10, color:T.muted, fontStyle:'italic' }}>"{s.msg.slice(0,60)}…"</div>
               </div>
+              <div style={{ fontSize:10, color:T.muted }}>{s.sentAt}</div>
             </div>
           ))}
         </div>
-        <button onClick={() => setSubStep('send')} disabled={isVipps?(!vippsNum||!vippsMSN):!izEmail} style={{ width:'100%', padding:'16px', borderRadius:13, border:'none', background:(isVipps?(!vippsNum||!vippsMSN):!izEmail)?T.dim:color, color:'#fff', fontWeight:900, fontSize:16, cursor:'pointer', opacity:(isVipps?(!vippsNum||!vippsMSN):!izEmail)?0.5:1 }}>
-          ✅ Ferdig – send betaling →
-        </button>
-      </div>
-    )
-  }
-
-  if (subStep==='send') {
-    const isVipps = provider==='vipps'; const color = isVipps?'#ff5b24':'#009b77'
-    return (
-      <div>
-        <BackBtn onClick={() => setSubStep('setup')}/>
-        <div style={{ fontWeight:900, fontSize:16, marginBottom:16 }}>📤 Send betalingsforespørsel</div>
-        <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:14, padding:16, marginBottom:14 }}>
-          <div style={{ fontWeight:900, fontSize:14, marginBottom:10 }}>1️⃣ Hva skal betales?</div>
-          {PAYMENT_PRODUCTS.map(p => (
-            <button key={p.id} onClick={() => { setProduct(p); setCustomAmt('') }} style={{ width:'100%', marginBottom:6, padding:'11px 14px', borderRadius:11, border:`2px solid ${product.id===p.id?color:T.border}`, background:product.id===p.id?`${color}15`:T.surface, color:T.text, cursor:'pointer', display:'flex', alignItems:'center', gap:12 }}>
-              <span style={{ fontSize:20 }}>{p.icon}</span><span style={{ flex:1, fontWeight:700, fontSize:13, textAlign:'left' }}>{p.label}</span><span style={{ fontWeight:900, color:product.id===p.id?color:T.muted }}>{p.amount} kr</span>
-            </button>
-          ))}
-          <div style={{ marginTop:10, display:'flex', alignItems:'center', gap:8 }}>
-            <span style={{ fontSize:13, color:T.muted }}>Eget beløp:</span>
-            <input type="number" value={customAmt} onChange={e => setCustomAmt(e.target.value)} placeholder="kr…" style={{ flex:1, padding:'9px 12px', borderRadius:9, border:`2px solid ${customAmt?color:T.border}`, background:T.surface, color:T.text, fontSize:14, outline:'none' }}/>
-            <span style={{ fontWeight:900, color, fontSize:16 }}>{finalAmount} kr</span>
-          </div>
-        </div>
-        <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:14, padding:16, marginBottom:14 }}>
-          <div style={{ fontWeight:900, fontSize:14, marginBottom:10 }}>2️⃣ Send via</div>
-          <div style={{ display:'flex', gap:8 }}>
-            {[{k:'sms',icon:'📱',label:'SMS'},{k:'email',icon:'📧',label:'E-post'}].map(m => (
-              <button key={m.k} onClick={() => setSendMethod(m.k)} style={{ flex:1, padding:'12px', borderRadius:11, border:`2px solid ${sendMethod===m.k?color:T.border}`, background:sendMethod===m.k?`${color}15`:T.surface, color:T.text, cursor:'pointer', fontWeight:800, fontSize:14, display:'flex', alignItems:'center', justifyContent:'center', gap:8 }}><span>{m.icon}</span><span>{m.label}</span></button>
-            ))}
-          </div>
-        </div>
-        <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:14, padding:16, marginBottom:14 }}>
-          <div style={{ fontWeight:900, fontSize:14, marginBottom:10 }}>3️⃣ Hvem skal betale?</div>
-          <input placeholder="🔍 Søk…" value={searchQ} onChange={e => setSearchQ(e.target.value)} style={{ width:'100%', padding:'9px 12px', borderRadius:9, border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:13, outline:'none', boxSizing:'border-box', marginBottom:10 }}/>
-          <div style={{ display:'flex', justifyContent:'space-between', marginBottom:8 }}>
-            <button onClick={() => setSelM(athletes.map(m=>m.id))} style={{ background:'none', border:'none', color, cursor:'pointer', fontSize:12, fontWeight:800 }}>Velg alle</button>
-            <button onClick={() => setSelM([])} style={{ background:'none', border:'none', color:T.muted, cursor:'pointer', fontSize:12 }}>Fjern alle</button>
-          </div>
-          <div style={{ maxHeight:220, overflowY:'auto', display:'flex', flexDirection:'column', gap:5 }}>
-            {filteredM.map(m => {
-              const sel = selectedMembers.includes(m.id)
-              return (
-                <button key={m.id} onClick={() => toggleMember(m.id)} style={{ padding:'10px 12px', borderRadius:10, border:`2px solid ${sel?color:T.border}`, background:sel?`${color}15`:T.surface, color:T.text, cursor:'pointer', display:'flex', alignItems:'center', gap:10, textAlign:'left' }}>
-                  <div style={{ width:18, height:18, borderRadius:5, border:`2px solid ${sel?color:T.dim}`, background:sel?color:'transparent', flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center' }}>{sel&&<span style={{ color:'#fff', fontSize:12, fontWeight:900 }}>✓</span>}</div>
-                  <Avatar name={m.name} size={26}/><span style={{ flex:1, fontWeight:700, fontSize:13 }}>{m.name}</span>
-                </button>
-              )
-            })}
-          </div>
-        </div>
-        <button onClick={sendRequests} disabled={selectedMembers.length===0||sending} style={{ width:'100%', padding:'17px', borderRadius:13, border:'none', background:selectedMembers.length===0?T.dim:color, color:'#fff', fontWeight:900, fontSize:16, cursor:selectedMembers.length===0?'not-allowed':'pointer', opacity:selectedMembers.length===0?0.5:1 }}>
-          {sending?'Sender…':`📤 Send til ${selectedMembers.length} utøver${selectedMembers.length!==1?'e':''} (${finalAmount} kr)`}
-        </button>
-      </div>
-    )
-  }
-
-  if (subStep==='done') {
-    const color = provider==='vipps'?'#ff5b24':'#009b77'
-    return (
-      <div style={{ textAlign:'center', padding:'32px 16px' }}>
-        <div style={{ fontSize:64, marginBottom:12 }}>🎉</div>
-        <div style={{ fontWeight:900, fontSize:22, color, marginBottom:8 }}>Betalingsforespørsler sendt!</div>
-        <div style={{ color:T.muted, fontSize:14, marginBottom:24 }}>Utøverne har mottatt betaling via {provider==='vipps'?'Vipps':'Zettle'}.</div>
-        <div style={{ display:'flex', gap:10 }}>
-          <button onClick={() => setSubStep('send')} style={{ flex:1, padding:'13px', borderRadius:12, border:`1px solid ${color}`, background:`${color}18`, color, fontWeight:800, cursor:'pointer', fontSize:14 }}>+ Send flere</button>
-          <button onClick={() => setSubStep('choose')} style={{ flex:1, padding:'13px', borderRadius:12, border:`1px solid ${T.border}`, background:'transparent', color:T.muted, fontWeight:800, cursor:'pointer', fontSize:14 }}>← Oversikt</button>
-        </div>
-      </div>
-    )
-  }
-  return null
+      )}
+    </div>
+  )
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// FAKTURA TAB
-// ═══════════════════════════════════════════════════════════════════════════════
-const EMPTY_LINJE = () => ({ id:Date.now()+Math.random(), beskrivelse:'', antall:1, enhet:'stk', pris:'' })
-
-function FakturaTab({ members }) {
-  const [step, setStep]             = useState('liste')
-  const [fakturaer, setFakturaer]   = usePersistentState('spartacus_fakturaer', [])
-  const [intStep, setIntStep]       = useState(null)
-  const [fakturaNr]                 = useState(genFakturaNr)
-  const [mottaker, setMottaker]     = useState('member')
-  const [valgtMedlem, setValgtM]    = useState('')
-  const [fritekstNavn, setFTNavn]   = useState('')
-  const [fritekstEpost, setFTEpost] = useState('')
-  const [fritekstAdresse, setFTAdr] = useState('')
-  const [linjer, setLinjer]         = useState([EMPTY_LINJE()])
-  const [forfall, setForfall]       = useState(() => { const d=new Date(); d.setDate(d.getDate()+14); return d.toISOString().split('T')[0] })
-  const [notat, setNotat]           = useState('')
-  const [intValg, setIntValg]       = useState('pdf')
-  const [sendLoading, setSendLoading] = useState(false)
-  const [filterStatus, setFilterStatus] = useState('alle')
-  const [searchQ, setSQ]            = useState('')
-
-  const athletes = members.filter(m => !m.isCoach)
-
-  function oppdaterLinje(id, felt, val) { setLinjer(p => p.map(l => l.id===id?{...l,[felt]:val}:l)) }
-  function leggTilLinje() { setLinjer(p => [...p, EMPTY_LINJE()]) }
-  function fjernLinje(id) { setLinjer(p => p.filter(l => l.id!==id)) }
-
-  const subtotal = linjer.reduce((s,l) => s+(parseFloat(l.pris)||0)*(parseInt(l.antall)||0), 0)
-  const mva      = Math.round(subtotal*0.25)
-  const total    = subtotal + mva
-
-  function getMottakerNavn() { return mottaker==='member' ? athletes.find(m=>m.id===valgtMedlem)?.name||'' : fritekstNavn }
-
-  function sendFaktura() {
-    setSendLoading(true)
-    setTimeout(() => {
-      const ny = { id:fakturaNr, mottaker:getMottakerNavn(), epost:mottaker==='fritekst'?fritekstEpost:'', linjer:linjer.filter(l=>l.beskrivelse.trim()), subtotal, mva, total, forfall, notat, integrert:intValg, dato:todayISO(), status:'sendt' }
-      setFakturaer(prev => {
-        const updated = [ny, ...prev]
-        localStorage.setItem('spartacus_fakturaer', JSON.stringify(updated))
-        return updated
-      })
-      setStep('sendt'); setSendLoading(false)
-    }, 900)
-  }
-
-  function oppdaterFakturaStatus(id, status) {
-    setFakturaer(prev => {
-      const updated = prev.map(f => f.id===id ? { ...f, status } : f)
-      localStorage.setItem('spartacus_fakturaer', JSON.stringify(updated))
-      return updated
-    })
-  }
-
-  function slettFaktura(id) {
-    setFakturaer(prev => {
-      const updated = prev.filter(f => f.id!==id)
-      localStorage.setItem('spartacus_fakturaer', JSON.stringify(updated))
-      return updated
-    })
-  }
-
-  function resetSkjema() { setMottaker('member'); setValgtM(''); setFTNavn(''); setFTEpost(''); setFTAdr(''); setLinjer([EMPTY_LINJE()]); setNotat(''); setIntValg('pdf') }
-
-  if (step==='liste') {
-    const visF = fakturaer.filter(f => {
-      if (filterStatus!=='alle' && f.status!==filterStatus) return false
-      if (searchQ.trim() && !f.mottaker.toLowerCase().includes(searchQ.toLowerCase()) && !f.id.includes(searchQ)) return false
-      return true
-    })
-    const totalSendt = fakturaer.filter(f => f.status==='sendt').reduce((s,f) => s+f.total, 0)
-    return (
-      <div>
-        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:16, flexWrap:'wrap', gap:10 }}>
-          <div><div style={{ fontWeight:900, fontSize:18 }}>🧾 Faktura</div><div style={{ color:T.muted, fontSize:13 }}>Lag faktura på hva som helst – utstyr, tøy, leie, kurs og mer</div></div>
-          <button onClick={() => { resetSkjema(); setStep('ny') }} style={{ padding:'12px 22px', borderRadius:12, border:'none', background:T.accent, color:'#fff', fontWeight:900, fontSize:15, cursor:'pointer' }}>+ Ny faktura</button>
-        </div>
-        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(130px,1fr))', gap:10, marginBottom:16 }}>
-          {[{n:fakturaer.length,l:'Totalt sendt',c:T.blue},{n:fakturaer.filter(f=>f.status==='sendt').length,l:'Venter betaling',c:T.yellow},{n:`${totalSendt.toLocaleString('nb-NO')} kr`,l:'Sum utestående',c:T.green}].map(({n,l,c}) => (
-            <div key={l} style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:12, padding:'14px 12px', textAlign:'center' }}>
-              <div style={{ fontSize:22, fontWeight:900, color:c, lineHeight:1 }}>{n}</div>
-              <div style={{ fontSize:10, color:T.muted, marginTop:5, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.06em', lineHeight:1.3 }}>{l}</div>
-            </div>
-          ))}
-        </div>
-        <div style={{ display:'flex', gap:8, marginBottom:14, flexWrap:'wrap' }}>
-          <input placeholder="🔍 Søk faktura / mottaker…" value={searchQ} onChange={e => setSQ(e.target.value)} style={{ flex:1, minWidth:140, padding:'8px 12px', borderRadius:9, border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:13, outline:'none' }}/>
-          {['alle','sendt','betalt','kansellert'].map(s => (
-            <button key={s} onClick={() => setFilterStatus(s)} style={{ padding:'7px 13px', borderRadius:9, border:`1px solid ${filterStatus===s?T.accent:T.border}`, background:filterStatus===s?T.accent:'transparent', color:filterStatus===s?'#fff':T.muted, cursor:'pointer', fontSize:12, fontWeight:700 }}>
-              {s==='alle'?'Alle':s==='sendt'?'Sendt':s==='betalt'?'Betalt':'Kansellert'}
-            </button>
-          ))}
-        </div>
-        <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:14, padding:16, marginBottom:16 }}>
-          <div style={{ fontWeight:800, fontSize:13, marginBottom:10 }}>🔌 Koble til regnskapssystem</div>
-          <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
-            {INTEGRASJONER.filter(i => i.key!=='pdf').map(i => (
-              <button key={i.key} onClick={() => setIntStep(i.key)} style={{ padding:'8px 14px', borderRadius:10, border:`1px solid ${intStep===i.key?i.color:T.border}`, background:intStep===i.key?`${i.color}22`:'transparent', color:intStep===i.key?i.color:T.muted, cursor:'pointer', fontSize:12, fontWeight:800, display:'flex', alignItems:'center', gap:6 }}>
-                <span>{i.logo}</span>{i.label}{intStep===i.key&&<span style={{ color:T.green, fontSize:11 }}>✓</span>}
-              </button>
-            ))}
-          </div>
-          {intStep && <div style={{ marginTop:12, padding:'12px 14px', borderRadius:10, background:T.surface, border:`1px solid ${INTEGRASJONER.find(i=>i.key===intStep)?.color}44`, fontSize:13, color:T.muted, display:'flex', alignItems:'center', gap:10 }}><span style={{ fontSize:20 }}>{INTEGRASJONER.find(i=>i.key===intStep)?.logo}</span><div><span style={{ color:T.text, fontWeight:800 }}>{INTEGRASJONER.find(i=>i.key===intStep)?.label}</span> er koblet til (demo).</div></div>}
-        </div>
-        {visF.length===0 ? (
-          <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:14, padding:40, textAlign:'center' }}>
-            <div style={{ fontSize:48, marginBottom:12 }}>🧾</div>
-            <div style={{ fontWeight:800, fontSize:16, marginBottom:6 }}>Ingen fakturaer ennå</div>
-            <div style={{ color:T.muted, fontSize:14, marginBottom:20 }}>Lag din første faktura på utstyr, tøy, leie eller hva som helst!</div>
-            <button onClick={() => { resetSkjema(); setStep('ny') }} style={{ padding:'12px 28px', borderRadius:12, border:'none', background:T.accent, color:'#fff', fontWeight:900, fontSize:15, cursor:'pointer' }}>+ Lag faktura nå</button>
-          </div>
-        ) : (
-          <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:14, overflow:'hidden' }}>
-            {visF.map((f,i) => (
-              <div key={f.id} style={{ padding:'14px 16px', borderBottom:i<visF.length-1?`1px solid ${T.border}`:'none', display:'flex', alignItems:'center', gap:12, flexWrap:'wrap' }}>
-                <div style={{ width:38, height:38, borderRadius:10, background:`${T.accent}22`, border:`1px solid ${T.accent}55`, display:'flex', alignItems:'center', justifyContent:'center', color:T.accent, flexShrink:0 }}>🧾</div>
-                <div style={{ flex:1, minWidth:100 }}><div style={{ fontWeight:800, fontSize:14 }}>{f.mottaker}</div><div style={{ fontSize:11, color:T.muted }}>{f.id} · {f.dato} · Forfall {f.forfall}</div></div>
-                <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
-                  <span style={{ fontWeight:900, fontSize:16, color:T.green }}>{f.total.toLocaleString('nb-NO')} kr</span>
-                  <Tag c={f.status==='betalt'?T.green:f.status==='kansellert'?T.red:T.yellow}>{f.status==='betalt'?'✓ Betalt':f.status==='kansellert'?'Kansellert':'Sendt'}</Tag>
-                  <Tag c={INTEGRASJONER.find(x=>x.key===f.integrert)?.color||T.muted}>{INTEGRASJONER.find(x=>x.key===f.integrert)?.label||'PDF'}</Tag>
-                </div>
-                <div style={{ display:'flex', gap:5 }}>
-                  <button onClick={() => oppdaterFakturaStatus(f.id,'betalt')} disabled={f.status==='betalt'} style={{ padding:'5px 10px', borderRadius:7, border:`1px solid ${T.green}55`, background:`${T.green}15`, color:T.green, cursor:f.status==='betalt'?'not-allowed':'pointer', fontSize:11, fontWeight:800, opacity:f.status==='betalt'?0.4:1 }}>Betalt</button>
-                  <button onClick={() => slettFaktura(f.id)} style={{ padding:'5px 9px', borderRadius:7, border:`1px solid ${T.border}`, background:'transparent', color:T.red, cursor:'pointer', fontSize:11 }}>🗑</button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    )
-  }
-
-  if (step==='ny') {
-    return (
-      <div>
-        <BackBtn onClick={() => setStep('liste')}/>
-        <div style={{ fontWeight:900, fontSize:18, marginBottom:2 }}>🧾 Ny faktura</div>
-        <div style={{ color:T.muted, fontSize:13, marginBottom:18 }}>Fakturanr: <strong style={{ color:T.accent }}>{fakturaNr}</strong></div>
-        <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:14, padding:18, marginBottom:14 }}>
-          <div style={{ fontWeight:900, fontSize:14, marginBottom:12, display:'flex', alignItems:'center', gap:8 }}>
-            <span style={{ width:26, height:26, borderRadius:'50%', background:T.accent, color:'#fff', display:'inline-flex', alignItems:'center', justifyContent:'center', fontSize:13, fontWeight:900, flexShrink:0 }}>1</span>
-            Hvem er fakturaen til?
-          </div>
-          <div style={{ display:'flex', gap:8, marginBottom:12 }}>
-            {[{k:'member',l:'👤 Velg fra liste'},{k:'fritekst',l:'✏️ Skriv inn selv'}].map(opt => (
-              <button key={opt.k} onClick={() => setMottaker(opt.k)} style={{ flex:1, padding:'11px', borderRadius:10, border:`2px solid ${mottaker===opt.k?T.accent:T.border}`, background:mottaker===opt.k?`${T.accent}15`:T.surface, color:T.text, cursor:'pointer', fontWeight:800, fontSize:13 }}>{opt.l}</button>
-            ))}
-          </div>
-          {mottaker==='member' ? (
-            <select value={valgtMedlem} onChange={e => setValgtM(e.target.value)} style={{ width:'100%', padding:'13px 14px', borderRadius:10, border:`2px solid ${valgtMedlem?T.accent:T.border}`, background:T.surface, color:valgtMedlem?T.text:T.muted, fontSize:15, outline:'none' }}>
-              <option value="">– Velg utøver –</option>
-              {athletes.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-            </select>
-          ) : (
-            <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-              <input placeholder="Fullt navn *" value={fritekstNavn} onChange={e => setFTNavn(e.target.value)} style={{ padding:'12px 14px', borderRadius:10, border:`2px solid ${fritekstNavn?T.accent:T.border}`, background:T.surface, color:T.text, fontSize:14, outline:'none' }}/>
-              <input placeholder="E-postadresse" value={fritekstEpost} onChange={e => setFTEpost(e.target.value)} style={{ padding:'12px 14px', borderRadius:10, border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:14, outline:'none' }}/>
-              <input placeholder="Adresse (valgfritt)" value={fritekstAdresse} onChange={e => setFTAdr(e.target.value)} style={{ padding:'12px 14px', borderRadius:10, border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:14, outline:'none' }}/>
-            </div>
-          )}
-        </div>
-        <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:14, padding:18, marginBottom:14 }}>
-          <div style={{ fontWeight:900, fontSize:14, marginBottom:12, display:'flex', alignItems:'center', gap:8 }}>
-            <span style={{ width:26, height:26, borderRadius:'50%', background:T.accent, color:'#fff', display:'inline-flex', alignItems:'center', justifyContent:'center', fontSize:13, fontWeight:900, flexShrink:0 }}>2</span>
-            Hva skal faktureres?
-          </div>
-          <div style={{ marginBottom:12 }}>
-            <div style={{ fontSize:11, color:T.muted, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.07em', marginBottom:6 }}>Hurtigvalg:</div>
-            <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
-              {FAKTURA_KATEGORIER.map(k => (
-                <button key={k} onClick={() => setLinjer(p => [...p.filter(l=>l.beskrivelse||l.pris), {id:Date.now()+Math.random(),beskrivelse:k,antall:1,enhet:'stk',pris:''}])} style={{ padding:'6px 12px', borderRadius:99, border:`1px solid ${T.border}`, background:T.surface, color:T.muted, cursor:'pointer', fontSize:12, fontWeight:700 }}>+ {k}</button>
-              ))}
-            </div>
-          </div>
-          <div style={{ overflowX:'auto' }}>
-            <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
-              <thead>
-                <tr style={{ borderBottom:`1px solid ${T.border}` }}>
-                  {['Beskrivelse','Antall','Enhet','Pris (kr)','Sum',''].map(h => (
-                    <th key={h} style={{ padding:'6px 8px', textAlign:'left', color:T.muted, fontWeight:800, fontSize:10, textTransform:'uppercase', letterSpacing:'0.07em', whiteSpace:'nowrap' }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {linjer.map(l => {
-                  const sum = (parseFloat(l.pris)||0)*(parseInt(l.antall)||0)
-                  return (
-                    <tr key={l.id} style={{ borderBottom:`1px solid ${T.border}` }}>
-                      <td style={{ padding:'6px 8px' }}><input value={l.beskrivelse} onChange={e => oppdaterLinje(l.id,'beskrivelse',e.target.value)} placeholder="F.eks. Boksehansker 10oz…" style={{ width:'100%', minWidth:130, padding:'8px 10px', borderRadius:8, border:`1px solid ${l.beskrivelse?T.accent:T.border}`, background:T.surface, color:T.text, fontSize:13, outline:'none', boxSizing:'border-box' }}/></td>
-                      <td style={{ padding:'6px 8px' }}><input type="number" min="1" value={l.antall} onChange={e => oppdaterLinje(l.id,'antall',e.target.value)} style={{ width:50, padding:'8px 6px', borderRadius:8, border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:13, outline:'none', textAlign:'center' }}/></td>
-                      <td style={{ padding:'6px 8px' }}><select value={l.enhet} onChange={e => oppdaterLinje(l.id,'enhet',e.target.value)} style={{ padding:'8px 6px', borderRadius:8, border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:12, outline:'none' }}>{['stk','par','time','mnd','år','sett'].map(u => <option key={u}>{u}</option>)}</select></td>
-                      <td style={{ padding:'6px 8px' }}><input type="number" value={l.pris} onChange={e => oppdaterLinje(l.id,'pris',e.target.value)} placeholder="0" style={{ width:76, padding:'8px 8px', borderRadius:8, border:`1px solid ${l.pris?T.accent:T.border}`, background:T.surface, color:T.text, fontSize:13, outline:'none', textAlign:'right' }}/></td>
-                      <td style={{ padding:'6px 8px', fontWeight:900, color:sum>0?T.green:T.muted, textAlign:'right', whiteSpace:'nowrap', fontSize:14 }}>{sum>0?`${sum.toLocaleString('nb-NO')} kr`:'–'}</td>
-                      <td style={{ padding:'6px 4px' }}>{linjer.length>1&&<button onClick={() => fjernLinje(l.id)} style={{ background:'none', border:'none', color:T.red, cursor:'pointer', fontSize:16, padding:'2px 4px' }}>×</button>}</td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-          <button onClick={leggTilLinje} style={{ marginTop:10, padding:'9px 16px', borderRadius:9, border:`1px dashed ${T.accent}`, background:`${T.accent}10`, color:T.accent, cursor:'pointer', fontWeight:800, fontSize:13, width:'100%' }}>+ Legg til linje</button>
-          {subtotal>0 && (
-            <div style={{ marginTop:16, borderTop:`1px solid ${T.border}`, paddingTop:12 }}>
-              {[{l:'Subtotal (eks. mva)',v:`${subtotal.toLocaleString('nb-NO')} kr`,bold:false},{l:'MVA 25%',v:`${mva.toLocaleString('nb-NO')} kr`,bold:false},{l:'TOTALT',v:`${total.toLocaleString('nb-NO')} kr`,bold:true}].map(r => (
-                <div key={r.l} style={{ display:'flex', justifyContent:'space-between', padding:'5px 0', fontSize:r.bold?16:13 }}>
-                  <span style={{ color:r.bold?T.text:T.muted, fontWeight:r.bold?900:500 }}>{r.l}</span>
-                  <span style={{ color:r.bold?T.green:T.muted, fontWeight:r.bold?900:500 }}>{r.v}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-        <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:14, padding:18, marginBottom:14 }}>
-          <div style={{ fontWeight:900, fontSize:14, marginBottom:12, display:'flex', alignItems:'center', gap:8 }}>
-            <span style={{ width:26, height:26, borderRadius:'50%', background:T.accent, color:'#fff', display:'inline-flex', alignItems:'center', justifyContent:'center', fontSize:13, fontWeight:900, flexShrink:0 }}>3</span>
-            Detaljer
-          </div>
-          <div style={{ display:'flex', gap:10, flexWrap:'wrap' }}>
-            <div style={{ flex:1, minWidth:140 }}>
-              <div style={{ fontSize:11, color:T.muted, fontWeight:700, textTransform:'uppercase', marginBottom:5 }}>Forfallsdato</div>
-              <input type="date" value={forfall} onChange={e => setForfall(e.target.value)} style={{ width:'100%', padding:'12px 14px', borderRadius:10, border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:14, outline:'none', boxSizing:'border-box' }}/>
-            </div>
-            <div style={{ flex:2, minWidth:180 }}>
-              <div style={{ fontSize:11, color:T.muted, fontWeight:700, textTransform:'uppercase', marginBottom:5 }}>Notat til mottaker</div>
-              <input value={notat} onChange={e => setNotat(e.target.value)} placeholder="F.eks. Betales til konto 6013.05.06544" style={{ width:'100%', padding:'12px 14px', borderRadius:10, border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:14, outline:'none', boxSizing:'border-box' }}/>
-            </div>
-          </div>
-        </div>
-        <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:14, padding:18, marginBottom:18 }}>
-          <div style={{ fontWeight:900, fontSize:14, marginBottom:12, display:'flex', alignItems:'center', gap:8 }}>
-            <span style={{ width:26, height:26, borderRadius:'50%', background:T.accent, color:'#fff', display:'inline-flex', alignItems:'center', justifyContent:'center', fontSize:13, fontWeight:900, flexShrink:0 }}>4</span>
-            Send via / eksporter til
-          </div>
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(130px,1fr))', gap:8 }}>
-            {INTEGRASJONER.map(int => (
-              <button key={int.key} onClick={() => setIntValg(int.key)} style={{ padding:'12px 10px', borderRadius:11, border:`2px solid ${intValg===int.key?int.color:T.border}`, background:intValg===int.key?`${int.color}18`:T.surface, color:T.text, cursor:'pointer', textAlign:'center', display:'flex', flexDirection:'column', alignItems:'center', gap:6 }}>
-                <span style={{ fontSize:22 }}>{int.logo}</span>
-                <span style={{ fontWeight:800, fontSize:12, color:intValg===int.key?int.color:T.text }}>{int.label}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-        {(() => {
-          const ready = (mottaker==='member'?valgtMedlem:fritekstNavn.trim()) && linjer.some(l=>l.beskrivelse.trim()&&l.pris)
-          return <button onClick={sendFaktura} disabled={!ready||sendLoading} style={{ width:'100%', padding:'18px', borderRadius:14, border:'none', background:ready&&!sendLoading?T.accent:T.dim, color:'#fff', fontWeight:900, fontSize:17, cursor:ready&&!sendLoading?'pointer':'not-allowed', opacity:ready?1:0.5 }}>{sendLoading?'Sender…':`🧾 Send faktura${total>0?' – '+total.toLocaleString('nb-NO')+' kr':''}`}</button>
-        })()}
-      </div>
-    )
-  }
-
-  if (step==='sendt') {
-    const siste = fakturaer[0]; const intD = INTEGRASJONER.find(i => i.key===siste?.integrert)
-    return (
-      <div style={{ textAlign:'center', padding:'32px 16px' }}>
-        <div style={{ fontSize:64, marginBottom:12 }}>🎉</div>
-        <div style={{ fontWeight:900, fontSize:22, color:T.green, marginBottom:6 }}>Faktura sendt!</div>
-        <div style={{ color:T.muted, fontSize:14, marginBottom:6 }}>Fakturanr: <strong style={{ color:T.accent }}>{siste?.id}</strong></div>
-        <div style={{ color:T.muted, fontSize:14, marginBottom:20 }}>Mottaker: <strong style={{ color:T.text }}>{siste?.mottaker}</strong> · Sum: <strong style={{ color:T.green }}>{siste?.total.toLocaleString('nb-NO')} kr</strong></div>
-        {intD && <div style={{ display:'inline-flex', alignItems:'center', gap:8, padding:'10px 18px', borderRadius:10, background:`${intD.color}18`, border:`1px solid ${intD.color}44`, marginBottom:20, fontSize:13, color:intD.color, fontWeight:800 }}><span>{intD.logo}</span> Eksportert til {intD.label}</div>}
-        <div style={{ maxWidth:380, margin:'0 auto 24px', background:T.card, border:`1px solid ${T.border}`, borderRadius:14, padding:18, textAlign:'left' }}>
-          <div style={{ display:'flex', justifyContent:'space-between', marginBottom:14, alignItems:'flex-start' }}>
-            <div><div style={{ fontWeight:900, fontSize:15 }}>SPARTACUS</div><div style={{ fontSize:11, color:T.muted }}>Treningsklubb</div></div>
-            <div style={{ textAlign:'right' }}><div style={{ fontWeight:900, color:T.accent, fontSize:13 }}>{siste?.id}</div><div style={{ fontSize:11, color:T.muted }}>Dato: {siste?.dato}</div><div style={{ fontSize:11, color:T.muted }}>Forfall: {siste?.forfall}</div></div>
-          </div>
-          <div style={{ fontWeight:800, marginBottom:10 }}>Til: {siste?.mottaker}</div>
-          <div style={{ borderTop:`1px solid ${T.border}`, paddingTop:10 }}>
-            {siste?.linjer.map((l,i) => (
-              <div key={i} style={{ display:'flex', justifyContent:'space-between', fontSize:12, padding:'3px 0', color:T.muted }}>
-                <span>{l.antall}x {l.beskrivelse}</span><span style={{ color:T.text, fontWeight:700 }}>{((parseFloat(l.pris)||0)*(parseInt(l.antall)||0)).toLocaleString('nb-NO')} kr</span>
-              </div>
-            ))}
-          </div>
-          <div style={{ borderTop:`1px solid ${T.border}`, marginTop:8, paddingTop:8, display:'flex', justifyContent:'space-between', fontWeight:900, fontSize:15 }}><span>TOTALT</span><span style={{ color:T.green }}>{siste?.total.toLocaleString('nb-NO')} kr</span></div>
-          {siste?.notat && <div style={{ marginTop:8, fontSize:11, color:T.muted, fontStyle:'italic' }}>{siste.notat}</div>}
-        </div>
-        <div style={{ display:'flex', gap:10, maxWidth:380, margin:'0 auto' }}>
-          <button onClick={() => { resetSkjema(); setStep('ny') }} style={{ flex:1, padding:'13px', borderRadius:12, border:`1px solid ${T.accent}`, background:`${T.accent}18`, color:T.accent, fontWeight:800, cursor:'pointer', fontSize:14 }}>+ Ny faktura</button>
-          <button onClick={() => setStep('liste')} style={{ flex:1, padding:'13px', borderRadius:12, border:`1px solid ${T.border}`, background:'transparent', color:T.muted, fontWeight:800, cursor:'pointer', fontSize:14 }}>← Se alle</button>
-        </div>
-      </div>
-    )
-  }
-  return null
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════
 // MANAGE TAB
-// ═══════════════════════════════════════════════════════════════════════════════
-function ManageTab({ members, setMembers, onSync, miStatus }) {
-  const [subTab, setSub]   = useState('import_export')
-  const [newName, setNN]   = useState('')
-  const [newDisc, setND]   = useState('MMA')
-  const [newCoach, setNC]  = useState(false)
-  const [importTxt, setIT] = useState('')
-  const [importMsg, setIM] = useState('')
+// ═══════════════════════════════════════════════════════════
+function ManageTab({ members, setMembers, syncMI, miSt }) {
+  const [subTab, setSub]      = useState('members')
+  const [importTxt, setIT]    = useState('')
+  const [importMsg, setIM]    = useState('')
+  const [savedMsg, setSavedMsg] = useState('')
+  const [newM, setNewM]       = useState({ firstName:'', lastName:'', phone:'', email:'', disc:'MMA', birthDate:'', gender:'', address:'', isCoach:false })
+  const [arbeidsKopi, setAK]  = useState(() => [...members])
+  const [editingM, setEM]     = useState(null)
   const fileRef = useRef()
 
-  function downloadFile(content, filename, type) {
-    const blob = new Blob(['\uFEFF'+content], {type:type+';charset=utf-8'})
-    const url  = URL.createObjectURL(blob)
-    const a    = document.createElement('a')
-    a.href=url; a.download=filename; a.click(); URL.revokeObjectURL(url)
-  }
-  function exportMembersCSV() {
-    const header = 'Navn,Disiplin,Rolle,Min Idrett Status,Utløpsdato'
-    const rows   = members.map(m => [m.name,m.disc,m.isCoach?'Trener':'Utøver',MI_STATUS_DISPLAY[getMiStatus(m)].label,m.miExpires||''].join(','))
-    downloadFile([header,...rows].join('\n'), 'spartacus_medlemmer.csv', 'text/csv')
-  }
-  function exportMembersJSON() {
-    downloadFile(JSON.stringify(members,null,2), 'spartacus_medlemmer.json', 'application/json')
+  useEffect(() => setAK([...members]), [members])
+  const harUlagrede = JSON.stringify(arbeidsKopi) !== JSON.stringify(members)
+
+  function lagre() {
+    lsSet(LS_MEMBERS, arbeidsKopi)
+    setMembers([...arbeidsKopi])
+    setSavedMsg('✅ Lagret ' + arbeidsKopi.length + ' – ' + new Date().toLocaleTimeString('nb-NO'))
+    setTimeout(() => setSavedMsg(''), 4000)
   }
 
   function handleImport() {
-    const lines     = importTxt.trim().split('\n').filter(Boolean)
-    const isHeader  = lines[0]?.toLowerCase().includes('navn') || lines[0]?.toLowerCase().includes('name')
-    const dataLines = isHeader ? lines.slice(1) : lines
-
-    const toAdd = []
-    dataLines.forEach(line => {
-      const parts = line.split(/[,;\t]+/)
-      const name  = (parts[0]||'').trim().replace(/^"|"$/g, '')
-      const disc  = (parts[1]||'MMA').trim().replace(/^"|"$/g, '') || 'MMA'
-      const role  = (parts[2]||'').trim().toLowerCase()
-      if (!name) return
-      toAdd.push({ name, disc, isCoach: role.includes('trener') || role.includes('coach') })
+    const lines    = importTxt.trim().split('\n').filter(Boolean)
+    const isH      = lines[0] && (lines[0].toLowerCase().includes('fornavn') || lines[0].toLowerCase().includes('navn'))
+    const data     = isH ? lines.slice(1) : lines
+    const toAdd    = []
+    data.forEach(line => {
+      const p         = line.split(/[,;\t]+/)
+      const firstName = (p[0]||'').trim().replace(/^"|"$/g,'')
+      const lastName  = (p[1]||'').trim().replace(/^"|"$/g,'')
+      const disc      = (p[2]||'MMA').trim().replace(/^"|"$/g,'') || 'MMA'
+      const role      = (p[3]||'').trim().toLowerCase()
+      const email     = (p[4]||'').trim()
+      const phone     = (p[5]||'').trim()
+      const address   = (p[6]||'').trim()
+      const birthDate = (p[9]||'').trim()
+      const gender    = (p[10]||'').trim()
+      const full      = lastName ? firstName + ' ' + lastName : firstName
+      if (!full.trim()) return
+      toAdd.push({ firstName, lastName, name: full.trim(), disc, isCoach: role.includes('trener') || role.includes('coach'), email, phone, address, birthDate, gender })
     })
-
-    if (toAdd.length === 0) {
-      setIM('⚠️ Filen er tom eller har feil format')
-      return
-    }
-
-    setMembers(prev => {
-      const existing = new Set(prev.map(m => m.name.toLowerCase()))
-      const added = toAdd
-        .filter(m => !existing.has(m.name.toLowerCase()))
-        .map(m => ({
-          id:        `imp_${Date.now()}_${Math.random().toString(36).slice(2)}`,
-          name:      m.name,
-          disc:      m.disc,
-          isCoach:   m.isCoach,
-          miActive:  false,
-          miExpires: null,
-          miUnpaid:  false,
-          notMember: true,
-        }))
-
-      if (added.length === 0) {
-        setIM('⚠️ Alle i filen finnes allerede i systemet')
-        return prev
-      }
-
-      const updated = [...prev, ...added]
-      localStorage.setItem(LS_MEMBERS, JSON.stringify(updated))
-      setIM(`✅ ${added.length} av ${toAdd.length} importert — ${toAdd.length - added.length} duplikat${toAdd.length - added.length !== 1 ? 'er' : ''} hoppet over`)
-      return updated
-    })
-
+    if (toAdd.length === 0) { setIM('⚠️ Tom eller feil format'); return }
+    const existing = new Set(arbeidsKopi.map(m => m.name.toLowerCase()))
+    const added    = toAdd.filter(m => !existing.has(m.name.toLowerCase())).map(m => ({
+      id: 'imp_' + Date.now() + '_' + Math.random().toString(36).slice(2),
+      ...m, miActive:false, miExpires:null, miUnpaid:false, notMember:true,
+      postalCode:'', city:'', firstName: m.firstName, lastName: m.lastName,
+    }))
+    if (added.length === 0) { setIM('⚠️ Alle finnes allerede'); return }
+    setAK(p => [...p, ...added])
+    setIM('✅ ' + added.length + ' importert – husk å lagre')
     setIT('')
   }
 
   function addMember() {
-    if (!newName.trim()) return
-    const ny = {
-      id:        `man_${Date.now()}`,
-      name:      newName.trim(),
-      disc:      newCoach ? '–' : newDisc,
-      isCoach:   newCoach,
-      miActive:  false,
-      miExpires: null,
-      miUnpaid:  false,
-      notMember: true,
-    }
-    setMembers(prev => {
-      const updated = [...prev, ny]
-      localStorage.setItem(LS_MEMBERS, JSON.stringify(updated))
-      return updated
-    })
-    setNN(''); setNC(false)
+    const full = [newM.firstName.trim(), newM.lastName.trim()].filter(Boolean).join(' ')
+    if (!full) return
+    setAK(p => [...p, { id:'man_' + Date.now(), name:full, ...newM, miActive:false, miExpires:null, miUnpaid:false, notMember:true, postalCode:'', city:'' }])
+    setNewM({ firstName:'', lastName:'', phone:'', email:'', disc:'MMA', birthDate:'', gender:'', address:'', isCoach:false })
   }
 
   function slettMedlem(id) {
-    setMembers(prev => {
-      const updated = prev.filter(m => m.id!==id)
-      localStorage.setItem(LS_MEMBERS, JSON.stringify(updated))
-      return updated
-    })
+    const del = lsGet(LS_DELETED, [])
+    if (!del.includes(id)) lsSet(LS_DELETED, [...del, id])
+    setAK(p => p.filter(m => m.id !== id))
   }
-
-  const tabs2 = [
-    {key:'import_export', label:'📥 Import / Eksport'},
-    {key:'members',       label:'👥 Legg til manuelt'},
-    {key:'mi_settings',   label:'⚙️ Min Idrett'},
-  ]
 
   return (
     <div>
-      <div style={{ display:'flex', gap:6, marginBottom:16, flexWrap:'wrap' }}>
-        {tabs2.map(t => (
-          <button key={t.key} onClick={() => setSub(t.key)} style={{ padding:'7px 13px', borderRadius:9, border:`1px solid ${subTab===t.key?T.accent:T.border}`, background:subTab===t.key?T.accent:'transparent', color:subTab===t.key?'#fff':T.muted, cursor:'pointer', fontSize:12, fontWeight:700 }}>{t.label}</button>
+      <div style={{ position:'sticky', top:58, zIndex:100, marginBottom:10 }}>
+        <div style={{ background: harUlagrede ? T.yellow + '18' : T.green + '10', border:'1px solid ' + (harUlagrede ? T.yellow : T.green) + '44', borderRadius:11, padding:'10px 14px', display:'flex', alignItems:'center', justifyContent:'space-between', gap:10, flexWrap:'wrap' }}>
+          <div>
+            <div style={{ fontWeight:800, fontSize:12, color: harUlagrede ? T.yellow : T.green }}>
+              {harUlagrede ? '⚠️ Ulagrede endringer' : '✅ Alt lagret'}
+            </div>
+            <div style={{ fontSize:10, color:T.muted }}>{savedMsg || arbeidsKopi.length + ' medlemmer'}</div>
+          </div>
+          <button onClick={lagre} disabled={!harUlagrede} style={{ padding:'8px 18px', borderRadius:9, border:'none', background: harUlagrede ? T.green : T.dim, color:'#fff', fontWeight:900, fontSize:13, cursor: harUlagrede ? 'pointer' : 'not-allowed', opacity: harUlagrede ? 1 : 0.5 }}>
+            💾 Lagre endringer
+          </button>
+        </div>
+      </div>
+
+      <div style={{ display:'flex', gap:5, marginBottom:12, flexWrap:'wrap' }}>
+        {[{key:'members',label:'👥 Legg til'},{key:'import',label:'📥 Import'},{key:'mi',label:'⚙️ Min Idrett'}].map(t => (
+          <button key={t.key} onClick={() => setSub(t.key)} style={{ padding:'7px 11px', borderRadius:9, border:'1px solid ' + (subTab === t.key ? T.accent : T.border), background: subTab === t.key ? T.accent : 'transparent', color: subTab === t.key ? '#fff' : T.muted, cursor:'pointer', fontSize:11, fontWeight:700 }}>
+            {t.label}
+          </button>
         ))}
       </div>
 
-      {subTab==='import_export' && (
-        <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
-          <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:14, padding:18 }}>
-            <div style={{ fontWeight:900, fontSize:14, marginBottom:4 }}>📤 Eksporter</div>
-            <div style={{ color:T.muted, fontSize:13, marginBottom:14 }}>Last ned til Excel/CSV inkl. Min Idrett-status.</div>
-            <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
-              <button onClick={exportMembersCSV}  style={{ padding:'10px 16px', borderRadius:10, border:`1px solid ${T.green}55`, background:`${T.green}15`, color:T.green, cursor:'pointer', fontWeight:800, fontSize:13 }}>📋 Medlemmer (.csv)</button>
-              <button onClick={exportMembersJSON} style={{ padding:'10px 16px', borderRadius:10, border:`1px solid ${T.blue}55`,  background:`${T.blue}15`,  color:T.blue,  cursor:'pointer', fontWeight:800, fontSize:13 }}>📦 Medlemmer (.json)</button>
-            </div>
-          </div>
-          <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:14, padding:18 }}>
-            <div style={{ fontWeight:900, fontSize:14, marginBottom:4 }}>📥 Importer fra CSV</div>
-            <div style={{ color:T.muted, fontSize:13, marginBottom:6 }}>Format per linje: <code style={{ background:T.surface, padding:'2px 6px', borderRadius:5 }}>Navn, Gren, Rolle</code></div>
-            <div style={{ padding:'10px 14px', borderRadius:8, background:`${T.blue}12`, border:`1px solid ${T.blue}33`, fontSize:12, color:T.blue, marginBottom:12 }}>
-              ℹ️ Eksempel:<br/>
-              <code style={{ fontFamily:'monospace' }}>Torpal Merjoev, MMA<br/>Lena Hagen, Kickboksing<br/>Erik Strand, MMA, Trener</code>
-            </div>
-            <div style={{ padding:'8px 12px', borderRadius:8, background:`${T.yellow}12`, border:`1px solid ${T.yellow}44`, fontSize:12, color:T.yellow, marginBottom:12 }}>
-              ⚠️ Importerte medlemmer får status <strong>Ikke medlem</strong> inntil verifisert i Min Idrett.
-            </div>
-            <button onClick={() => fileRef.current.click()} style={{ marginBottom:10, padding:'9px 14px', borderRadius:9, border:`1px dashed ${T.border}`, background:T.surface, color:T.muted, cursor:'pointer', fontSize:13, width:'100%' }}>
-              📎 Last opp .csv eller .txt-fil
-            </button>
-            <input ref={fileRef} type="file" accept=".csv,.txt" style={{ display:'none' }}
-              onChange={e => {
-                const f = e.target.files[0]
-                if (!f) return
-                const r = new FileReader()
-                r.onload = ev => { setIT(ev.target.result); setIM('') }
-                r.readAsText(f, 'UTF-8')
-                e.target.value = ''
-              }}/>
-            <textarea value={importTxt} onChange={e => { setIT(e.target.value); setIM('') }}
-              placeholder={'Torpal Merjoev, MMA\nLena Hagen, Kickboksing\nErik Strand, MMA, Trener'}
-              style={{ width:'100%', height:130, padding:'12px 14px', borderRadius:10, border:`1px solid ${importTxt?T.accent:T.border}`, background:T.surface, color:T.text, fontSize:13, outline:'none', resize:'vertical', boxSizing:'border-box', fontFamily:'monospace' }}/>
-            <button onClick={handleImport} disabled={!importTxt.trim()}
-              style={{ marginTop:8, width:'100%', padding:'14px', borderRadius:10, border:'none', background:importTxt.trim()?T.accent:T.dim, color:'#fff', fontWeight:900, fontSize:15, cursor:importTxt.trim()?'pointer':'not-allowed', opacity:importTxt.trim()?1:0.5 }}>
-              Importer medlemmer
-            </button>
-            {importMsg && (
-              <div style={{ marginTop:10, padding:'10px 14px', borderRadius:9, background:importMsg.startsWith('✅')?`${T.green}15`:`${T.yellow}15`, border:`1px solid ${importMsg.startsWith('✅')?T.green:T.yellow}55`, color:importMsg.startsWith('✅')?T.green:T.yellow, fontWeight:700, fontSize:13 }}>
-                {importMsg}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {subTab==='members' && (
+      {subTab === 'members' && (
         <>
-          <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:14, padding:16, marginBottom:14 }}>
-            <div style={{ fontWeight:800, marginBottom:10, fontSize:13 }}>+ Legg til manuelt</div>
-            <div style={{ padding:'8px 12px', borderRadius:8, background:`${T.yellow}12`, border:`1px solid ${T.yellow}44`, fontSize:12, color:T.yellow, marginBottom:10 }}>
-              ⚠️ Får status <strong>Ikke medlem</strong> inntil verifisert i Min Idrett.
-            </div>
-            <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
-              <input value={newName} onChange={e => setNN(e.target.value)} placeholder="Fullt navn…" onKeyDown={e => e.key==='Enter'&&addMember()} style={{ flex:1, minWidth:140, padding:'9px 12px', borderRadius:9, border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:14, outline:'none' }}/>
-              <select value={newDisc} onChange={e => setND(e.target.value)} disabled={newCoach} style={selSt}>
-                {DISCIPLINES.slice(1).map(d => <option key={d}>{d}</option>)}
-              </select>
-              <label style={{ display:'flex', alignItems:'center', gap:5, color:T.muted, fontSize:13, cursor:'pointer' }}>
-                <input type="checkbox" checked={newCoach} onChange={e => setNC(e.target.checked)} style={{ accentColor:T.gold }}/>Trener
-              </label>
-              <button onClick={addMember} style={{ padding:'9px 16px', borderRadius:9, border:'none', background:T.accent, color:'#fff', fontWeight:800, cursor:'pointer' }}>Legg til</button>
-            </div>
-          </div>
-          <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:14, overflow:'hidden' }}>
-            {members.length===0 && <div style={{ padding:24, color:T.muted, textAlign:'center' }}>Ingen medlemmer ennå</div>}
-            {members.map((m,i) => {
-              const miSt = getMiStatus(m); const d = MI_STATUS_DISPLAY[miSt]
-              return (
-                <div key={m.id} style={{ padding:'11px 14px', borderBottom:i<members.length-1?`1px solid ${T.border}`:'none', display:'flex', alignItems:'center', gap:10 }}>
-                  <Avatar name={m.name} size={30}/>
-                  <span style={{ flex:1, fontWeight:600 }}>{m.name}</span>
-                  <Tag c={d.color}>{d.label}</Tag>
-                  <Tag c={T.blue}>{m.disc}</Tag>
-                  {m.isCoach && <Tag c={T.gold}>TRENER</Tag>}
-                  <button onClick={() => slettMedlem(m.id)} style={{ background:'none', border:'none', color:T.muted, cursor:'pointer', fontSize:15 }}>🗑</button>
+          <div style={{ background:T.card, border:'1px solid ' + T.border, borderRadius:14, padding:14, marginBottom:12 }}>
+            <div style={{ fontWeight:800, fontSize:13, marginBottom:10 }}>+ Nytt medlem</div>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:6 }}>
+              {[['Fornavn *','firstName'],['Etternavn','lastName'],['Telefon','phone'],['E-post','email'],['Adresse','address']].map(([l, k]) => (
+                <div key={k}>
+                  <div style={{ fontSize:10, color:T.muted, fontWeight:700, textTransform:'uppercase', marginBottom:3 }}>{l}</div>
+                  <input value={newM[k]||''} onChange={e => setNewM(p => ({ ...p, [k]: e.target.value }))} style={{ ...inputSt, marginBottom:0 }}/>
                 </div>
-              )
-            })}
+              ))}
+              <div>
+                <div style={{ fontSize:10, color:T.muted, fontWeight:700, textTransform:'uppercase', marginBottom:3 }}>Fødselsdato</div>
+                <input type="date" value={newM.birthDate||''} onChange={e => setNewM(p => ({ ...p, birthDate: e.target.value }))} style={{ ...inputSt, marginBottom:0 }}/>
+              </div>
+              <div>
+                <div style={{ fontSize:10, color:T.muted, fontWeight:700, textTransform:'uppercase', marginBottom:3 }}>Kjønn</div>
+                <select value={newM.gender||''} onChange={e => setNewM(p => ({ ...p, gender: e.target.value }))} style={{ ...selSt, fontSize:13, padding:'11px 14px', width:'100%' }}>
+                  <option value="">Velg</option><option>Mann</option><option>Kvinne</option><option>Annet</option>
+                </select>
+              </div>
+              <div>
+                <div style={{ fontSize:10, color:T.muted, fontWeight:700, textTransform:'uppercase', marginBottom:3 }}>Disiplin</div>
+                <select value={newM.disc||'MMA'} onChange={e => setNewM(p => ({ ...p, disc: e.target.value }))} style={{ ...selSt, fontSize:13, padding:'11px 14px', width:'100%' }}>
+                  {DISCIPLINES.slice(1).map(d => <option key={d}>{d}</option>)}
+                </select>
+              </div>
+              <div style={{ display:'flex', alignItems:'center', gap:6, paddingTop:20 }}>
+                <input type="checkbox" checked={newM.isCoach||false} onChange={e => setNewM(p => ({ ...p, isCoach: e.target.checked }))} style={{ accentColor:T.gold }}/>
+                <span style={{ color:T.muted, fontSize:13 }}>Trener</span>
+              </div>
+            </div>
+            <BigBtn onClick={addMember} disabled={!newM.firstName.trim()} style={{ marginTop:10 }}>+ Legg til</BigBtn>
+          </div>
+
+          <div style={{ background:T.card, border:'1px solid ' + T.border, borderRadius:14, overflow:'hidden' }}>
+            {arbeidsKopi.length === 0 && <div style={{ padding:24, color:T.muted, textAlign:'center' }}>Ingen</div>}
+            {arbeidsKopi.map((m, i) => (
+              <div key={m.id} style={{ padding:'10px 13px', borderBottom: i < arbeidsKopi.length-1 ? '1px solid ' + T.border : 'none', display:'flex', alignItems:'center', gap:8 }}>
+                <Avatar name={m.name} size={28}/>
+                <div style={{ flex:1 }}>
+                  <div style={{ fontWeight:700, fontSize:13 }}>
+                    {m.name}
+                    {isJunior(m) && <span style={{ marginLeft:6 }}><Tag c={T.blue}>Junior</Tag></span>}
+                  </div>
+                  <div style={{ fontSize:11, color:T.muted }}>{m.email || '–'} · {m.phone || '–'}</div>
+                </div>
+                <div style={{ display:'flex', gap:4 }}>
+                  <button onClick={() => setEM({ ...m })} style={{ padding:'5px 8px', borderRadius:7, border:'1px solid ' + T.accent + '44', background: T.accent + '15', color:T.accent, cursor:'pointer', fontSize:11 }}>✏️</button>
+                  <button onClick={() => slettMedlem(m.id)} style={{ padding:'5px 8px', borderRadius:7, border:'1px solid ' + T.red + '44', background: T.red + '12', color:T.red, cursor:'pointer', fontSize:11 }}>🗑</button>
+                </div>
+              </div>
+            ))}
           </div>
         </>
       )}
 
-      {subTab==='mi_settings' && (
-        <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:14, padding:20 }}>
-          <div style={{ fontWeight:900, fontSize:15, marginBottom:14 }}>Min Idrett integrasjon</div>
-          <div style={{ display:'flex', gap:10, alignItems:'center', marginBottom:16, padding:14, borderRadius:12, background:T.surface, border:`1px solid ${miStatus.status==='ok'?T.green:T.border}` }}>
-            <div style={{ width:10, height:10, borderRadius:'50%', background:miStatus.status==='ok'?T.green:miStatus.status==='syncing'?T.yellow:T.muted, flexShrink:0 }}/>
-            <div style={{ flex:1 }}>
-              <div style={{ fontWeight:800, fontSize:13 }}>{miStatus.status==='ok'?'Tilkoblet (mock)':miStatus.status==='syncing'?'Synkroniserer…':'Ikke tilkoblet'}</div>
-              <div style={{ fontSize:11, color:T.muted }}>{miStatus.fetchedAt?`Sist: ${new Date(miStatus.fetchedAt).toLocaleString('nb-NO')}`:''}{miStatus.count>0?` · ${miStatus.count} fra MI`:''}</div>
-            </div>
-            <button onClick={onSync} style={{ padding:'8px 14px', borderRadius:9, border:`1px solid ${T.accent}`, background:'transparent', color:T.accent, fontWeight:800, cursor:'pointer', fontSize:12 }}>{miStatus.status==='syncing'?'Synker…':'↻ Synk nå'}</button>
+      {subTab === 'import' && (
+        <div style={{ background:T.card, border:'1px solid ' + T.border, borderRadius:14, padding:16 }}>
+          <div style={{ fontWeight:800, fontSize:13, marginBottom:4 }}>📥 Importer CSV</div>
+          <div style={{ color:T.muted, fontSize:11, marginBottom:10 }}>
+            Format: <code style={{ background:T.surface, padding:'1px 5px', borderRadius:4 }}>Fornavn,Etternavn,Gren,Rolle,E-post,Telefon,Adresse,Postnr,Sted,Fødselsdato,Kjønn</code>
           </div>
-          {Object.entries(MI_STATUS_DISPLAY).map(([key,d]) => (
-            <div key={key} style={{ padding:'11px 14px', borderRadius:10, background:T.surface, border:`1px solid ${T.border}`, marginBottom:8, display:'flex', alignItems:'center', gap:12 }}>
-              <div style={{ width:10, height:10, borderRadius:'50%', background:d.color, flexShrink:0 }}/>
-              <span style={{ fontWeight:800, color:d.color, fontSize:13, minWidth:130 }}>{d.label}</span>
-              <span style={{ fontSize:12, color:T.muted }}>
-                {key==='active'     &&'Gyldig betalende medlem i Min Idrett'}
-                {key==='expired'    &&'Utløpt dato – krever fornyelse'}
-                {key==='unpaid'     &&'Åpen faktura hos Min Idrett'}
-                {key==='not_member' &&'Manuelt registrert eller gjest'}
-              </span>
+          <button onClick={() => fileRef.current.click()} style={{ marginBottom:8, padding:'8px 12px', borderRadius:9, border:'1px dashed ' + T.border, background:T.surface, color:T.muted, cursor:'pointer', fontSize:12, width:'100%' }}>
+            📎 Last opp CSV
+          </button>
+          <input ref={fileRef} type="file" accept=".csv,.txt" style={{ display:'none' }} onChange={e => {
+            const f = e.target.files[0]
+            if (!f) return
+            const r = new FileReader()
+            r.onload = ev => { setIT(ev.target.result); setIM('') }
+            r.readAsText(f, 'UTF-8')
+            e.target.value = ''
+          }}/>
+          <textarea value={importTxt} onChange={e => { setIT(e.target.value); setIM('') }} placeholder="Torpal,Merjoev,MMA,Utøver,torpal@ex.com,+4791234567" style={{ width:'100%', height:100, padding:'10px 12px', borderRadius:10, border:'1px solid ' + T.border, background:T.surface, color:T.text, fontSize:12, outline:'none', resize:'vertical', boxSizing:'border-box', fontFamily:'monospace' }}/>
+          <button onClick={handleImport} disabled={!importTxt.trim()} style={{ marginTop:8, width:'100%', padding:'12px', borderRadius:10, border:'none', background: importTxt.trim() ? T.accent : T.dim, color:'#fff', fontWeight:900, fontSize:14, cursor: importTxt.trim() ? 'pointer' : 'not-allowed', opacity: importTxt.trim() ? 1 : 0.5 }}>
+            Importer
+          </button>
+          {importMsg && (
+            <div style={{ marginTop:8, padding:'8px 12px', borderRadius:9, background: importMsg.startsWith('✅') ? T.green + '15' : T.yellow + '15', border:'1px solid ' + (importMsg.startsWith('✅') ? T.green : T.yellow) + '55', color: importMsg.startsWith('✅') ? T.green : T.yellow, fontWeight:700, fontSize:12 }}>
+              {importMsg}
             </div>
-          ))}
-          <div style={{ padding:14, borderRadius:10, background:`${T.blue}12`, border:`1px solid ${T.blue}33`, marginTop:8 }}>
-            <div style={{ fontWeight:800, color:T.blue, marginBottom:6, fontSize:13 }}>🔌 Koble til ekte Min Idrett API</div>
-            <div style={{ color:T.muted, fontSize:12, lineHeight:1.8 }}>
-              1. Registrer klubben på <strong style={{ color:T.text }}>idrettsforbundet.no</strong><br/>
-              2. Få API-tilgang fra NIF<br/>
-              3. Bytt ut <code style={{ background:T.surface, padding:'1px 5px', borderRadius:4 }}>mockMinIdrettFetch()</code> med ekte REST-kall
+          )}
+        </div>
+      )}
+
+      {subTab === 'mi' && (
+        <div style={{ background:T.card, border:'1px solid ' + T.border, borderRadius:14, padding:16 }}>
+          <div style={{ fontWeight:800, fontSize:14, marginBottom:12 }}>Min Idrett integrasjon</div>
+          <div style={{ display:'flex', gap:8, alignItems:'center', padding:12, borderRadius:10, background:T.surface, border:'1px solid ' + (miSt.status === 'ok' ? T.green : T.border), marginBottom:12 }}>
+            <div style={{ width:8, height:8, borderRadius:'50%', background: miSt.status === 'ok' ? T.green : miSt.status === 'syncing' ? T.yellow : T.muted, flexShrink:0 }}/>
+            <div style={{ flex:1 }}>
+              <div style={{ fontWeight:800, fontSize:13 }}>{miSt.status === 'ok' ? 'Tilkoblet' : miSt.status === 'syncing' ? 'Synkroniserer…' : 'Ikke tilkoblet'}</div>
+              {miSt.count > 0 && <div style={{ fontSize:11, color:T.muted }}>{miSt.count} fra Min Idrett</div>}
+            </div>
+            <button onClick={syncMI} style={{ padding:'7px 12px', borderRadius:8, border:'1px solid ' + T.accent, background:'transparent', color:T.accent, fontWeight:800, cursor:'pointer', fontSize:12 }}>
+              ↻ Synk
+            </button>
+          </div>
+          <div style={{ padding:12, borderRadius:10, background: T.blue + '12', border:'1px solid ' + T.blue + '33', fontSize:12, color:T.blue, lineHeight:1.7 }}>
+            <strong>Koble til ekte Min Idrett:</strong><br/>
+            1. Registrer på idrettsforbundet.no<br/>
+            2. Få API-tilgang fra NIF<br/>
+            3. Bytt ut <code style={{ background:T.surface, padding:'1px 4px', borderRadius:3 }}>mockMIFetch()</code>
+          </div>
+        </div>
+      )}
+
+      {editingM && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.88)', zIndex:500, display:'flex', alignItems:'center', justifyContent:'center', padding:20 }} onClick={e => e.target === e.currentTarget && setEM(null)}>
+          <div style={{ background:T.card, border:'1px solid ' + T.border, borderRadius:20, padding:22, maxWidth:480, width:'100%', maxHeight:'90vh', overflowY:'auto' }}>
+            <div style={{ display:'flex', justifyContent:'space-between', marginBottom:14 }}>
+              <div style={{ fontWeight:900, fontSize:16 }}>✏️ {editingM.name}</div>
+              <button onClick={() => setEM(null)} style={{ background:'none', border:'none', color:T.muted, cursor:'pointer', fontSize:20 }}>×</button>
+            </div>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:6 }}>
+              {[['Fornavn','firstName'],['Etternavn','lastName'],['E-post','email'],['Telefon','phone'],['Adresse','address']].map(([l, k]) => (
+                <div key={k}>
+                  <div style={{ fontSize:10, color:T.muted, fontWeight:700, textTransform:'uppercase', marginBottom:3 }}>{l}</div>
+                  <input value={editingM[k]||''} onChange={e => setEM(p => ({ ...p, [k]: e.target.value }))} style={{ ...inputSt, marginBottom:0 }}/>
+                </div>
+              ))}
+              <div>
+                <div style={{ fontSize:10, color:T.muted, fontWeight:700, textTransform:'uppercase', marginBottom:3 }}>Fødselsdato</div>
+                <input type="date" value={editingM.birthDate||''} onChange={e => setEM(p => ({ ...p, birthDate: e.target.value }))} style={{ ...inputSt, marginBottom:0 }}/>
+              </div>
+            </div>
+            <div style={{ marginTop:8, display:'flex', alignItems:'center', gap:6 }}>
+              <input type="checkbox" checked={editingM.isCoach||false} onChange={e => setEM(p => ({ ...p, isCoach: e.target.checked }))} style={{ accentColor:T.gold }}/>
+              <span style={{ color:T.muted, fontSize:13 }}>Trener</span>
+            </div>
+            <div style={{ display:'flex', gap:8, marginTop:14 }}>
+              <button onClick={() => {
+                const full = [editingM.firstName, editingM.lastName].filter(Boolean).join(' ') || editingM.name
+                setAK(p => p.map(m => m.id === editingM.id ? { ...editingM, name: full } : m))
+                setEM(null)
+              }} style={{ flex:1, padding:'12px', borderRadius:10, border:'none', background:T.green, color:'#fff', fontWeight:900, cursor:'pointer' }}>
+                💾 Lagre
+              </button>
+              <button onClick={() => setEM(null)} style={{ padding:'12px 16px', borderRadius:10, border:'1px solid ' + T.border, background:'transparent', color:T.muted, cursor:'pointer' }}>
+                Avbryt
+              </button>
             </div>
           </div>
         </div>
